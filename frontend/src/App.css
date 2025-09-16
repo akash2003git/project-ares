@@ -1,0 +1,23 @@
+@import "leaflet/dist/leaflet.css";
+
+.map-container {
+  height: 500px;
+  width: 800px;
+  margin: 20px auto; /* Centered */
+  border: 2px solid #ccc;
+  border-radius: 8px;
+}
+
+/* Legend styles */
+.legend {
+  background: white;
+  padding: 8px 12px;
+  border-radius: 5px;
+  font-size: 14px;
+  line-height: 18px;
+  box-shadow: 0 0 6px rgba(0, 0, 0, 0.3);
+}
+.legend h4 {
+  margin: 0 0 4px 0;
+  font-size: 14px;
+}

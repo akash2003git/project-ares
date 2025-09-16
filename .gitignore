@@ -1,0 +1,46 @@
+# ----------------------------------------
+# General Files
+# ----------------------------------------
+.DS_Store
+.env
+.flaskenv
+*.sqlite3
+
+# ----------------------------------------
+# Python / Backend
+# ----------------------------------------
+# Virtual environment
+venv/
+env/
+
+# Byte-compiled / optimized / aot files
+__pycache__/
+*.py[cod]
+
+# Temporary files
+*.tmp
+*.log
+
+# Database files
+*.db
+
+# ----------------------------------------
+# Node / Frontend
+# ----------------------------------------
+node_modules/
+dist/
+build/
+.vite/
+
+# NPM debug logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# ----------------------------------------
+# IDE and Editor files
+# ----------------------------------------
+.idea/
+.vscode/
+*.swp
