@@ -6,6 +6,14 @@
 .flaskenv
 *.sqlite3
 
+# PyTorch model weights
+*.pth
+*.pt
+
+# Large geospatial data files
+*.tif
+*.tiff
+
 # ----------------------------------------
 # Python / Backend
 # ----------------------------------------
