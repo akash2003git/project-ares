@@ -1,23 +1,37 @@
 import { MapContainer, TileLayer, GeoJSON, useMap } from "react-leaflet";
 import { useState, useEffect, useCallback } from "react";
-import L from "leaflet";
+// NOTE: L, MapContainer, TileLayer, GeoJSON, useMap, and leaflet global styling
+// are assumed to be loaded via external script tags in the environment.
+// We must ensure the L variable is available from the global scope.
+const L = window.L;
 
 // --- Leaflet Setup ---
-delete L.Icon.Default.prototype._getIconUrl;
-L.Icon.Default.mergeOptions({
-  iconRetinaUrl:
-    "https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon-2x.png",
-  iconUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png",
-  shadowUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png",
-});
+// Fix default Leaflet icons (necessary for correct display)
+// This code relies on L being globally available, which is necessary to fix the icon paths.
+if (L && L.Icon && L.Icon.Default) {
+  delete L.Icon.Default.prototype._getIconUrl;
+  L.Icon.Default.mergeOptions({
+    iconRetinaUrl:
+      "https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon-2x.png",
+    iconUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png",
+    shadowUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png",
+  });
+}
 
 // Helper: Auto-fit bounds when new data is loaded
 function FitBounds({ data }) {
   const map = useMap();
   useEffect(() => {
-    if (data && data.type === "FeatureCollection" && data.features.length > 0) {
+    // Check if the data is valid GeoJSON with features
+    if (
+      data &&
+      data.type === "FeatureCollection" &&
+      data.features.length > 0 &&
+      L
+    ) {
       try {
         const geoJsonLayer = L.geoJSON(data);
+        // Padding helps prevent features from sitting right on the edge
         map.fitBounds(geoJsonLayer.getBounds(), {
           padding: [40, 40],
           maxZoom: 15,
@@ -30,6 +44,7 @@ function FitBounds({ data }) {
   return null;
 }
 
+// --- Main Application Component ---
 const defaultPosition = [21.01, 79.11]; // Nagpur fallback
 
 export default function App() {
@@ -43,10 +58,15 @@ export default function App() {
   const [fileName2, setFileName2] = useState("Week 2 File (GeoJSON)");
 
   // --- File Handling ---
+  /**
+   * Reads a file and parses it as GeoJSON, updating the corresponding state.
+   */
   const handleFileUpload = (event, setData, setFileName) => {
     const file = event.target.files[0];
     if (!file) return;
 
+    // Clear changes when a new file is uploaded
+    setChanges(null);
     setFileName(file.name);
     setStatusMessage(`Loading ${file.name}...`);
     setData(null);
@@ -82,6 +102,9 @@ export default function App() {
   };
 
   // --- Call backend for change detection ---
+  /**
+   * Sends the uploaded files to the backend API for processing.
+   */
   const detectChanges = useCallback(async () => {
     if (!week1Data || !week2Data) {
       setStatusMessage("Please upload both Week 1 and Week 2 GeoJSON files.");
@@ -92,8 +115,17 @@ export default function App() {
     setChanges(null);
 
     const formData = new FormData();
-    formData.append("file_old", document.getElementById("file1").files[0]);
-    formData.append("file_new", document.getElementById("file2").files[0]);
+    // Retrieve files directly from the input elements
+    const file1 = document.getElementById("file1").files[0];
+    const file2 = document.getElementById("file2").files[0];
+
+    if (!file1 || !file2) {
+      setStatusMessage("Error: Files are missing from input fields.");
+      return;
+    }
+
+    formData.append("file_old", file1);
+    formData.append("file_new", file2);
 
     try {
       const res = await fetch(
@@ -105,7 +137,11 @@ export default function App() {
       );
 
       if (!res.ok) {
-        throw new Error(`Backend error: ${res.status}`);
+        // Attempt to read error message from backend
+        const errorText = await res.text();
+        throw new Error(
+          `Backend error (${res.status}): ${errorText.substring(0, 100)}...`,
+        );
       }
 
       const data = await res.json();
@@ -117,28 +153,56 @@ export default function App() {
     }
   }, [week1Data, week2Data]);
 
-  // Styles
+  // --- Styles ---
+  // Styles for detected changes (visible after detection)
   const newRoadsStyle = {
-    color: "#10B981",
+    color: "#10B981", // Emerald Green
     weight: 5,
     opacity: 1,
     dashArray: "8, 8",
   };
   const removedRoadsStyle = {
-    color: "#EF4444",
+    color: "#EF4444", // Red
     weight: 5,
     opacity: 1,
     dashArray: "12, 6",
   };
 
-  // Pick data to fit bounds: prefer detected changes, else uploaded files
-  const dataForBounds =
-    changes ||
-    (week1Data &&
-      week2Data && {
-        type: "FeatureCollection",
-        features: [...week1Data.features, ...week2Data.features],
-      });
+  // Styles for uploaded raw files (visible before detection, or as background)
+  const week1Style = {
+    color: "#4F46E5", // Indigo Blue
+    weight: 2,
+    opacity: 0.6,
+  };
+  const week2Style = {
+    color: "#FBBF24", // Amber Yellow
+    weight: 2,
+    opacity: 0.6,
+  };
+
+  // Pick data to fit bounds: prioritize detected changes, otherwise combine uploaded files
+  let dataForBounds = null;
+  if (changes) {
+    // If changes exist, use the combined features from the changes object
+    dataForBounds = changes;
+  } else if (week1Data && week2Data) {
+    // If files are loaded but no changes are detected yet, combine them to fit the area of interest
+    dataForBounds = {
+      type: "FeatureCollection",
+      features: [...week1Data.features, ...week2Data.features],
+    };
+  } else if (week1Data) {
+    dataForBounds = week1Data;
+  } else if (week2Data) {
+    dataForBounds = week2Data;
+  }
+
+  // Boolean flags for UI state
+  const isDetecting =
+    statusMessage.includes("Detecting") || statusMessage.includes("Uploading");
+  // showRawData is true if files are loaded and change detection hasn't been run yet
+  const showRawData = !changes && (week1Data || week2Data);
+  const hasChanges = changes?.features?.length > 0;
 
   return (
     <div className="min-h-screen bg-gray-50 flex flex-col font-sans">
@@ -152,7 +216,7 @@ export default function App() {
         {/* Control Panel */}
         <div className="lg:w-1/3 xl:w-1/4 bg-white p-6 rounded-xl shadow-lg space-y-6 flex flex-col">
           <h2 className="text-xl font-semibold text-gray-700 border-b pb-2 mb-2">
-            Upload Data
+            Upload & Process
           </h2>
 
           {/* Upload Week 1 */}
@@ -161,8 +225,9 @@ export default function App() {
               htmlFor="file1"
               className="block text-sm font-medium text-gray-700"
             >
-              <span className="font-bold text-indigo-600">Week 1 Data</span>{" "}
-              (Baseline)
+              <span className="font-bold text-indigo-600">
+                Week 1 Data (Baseline)
+              </span>
             </label>
             <input
               id="file1"
@@ -192,8 +257,9 @@ export default function App() {
               htmlFor="file2"
               className="block text-sm font-medium text-gray-700"
             >
-              <span className="font-bold text-indigo-600">Week 2 Data</span>{" "}
-              (Comparison)
+              <span className="font-bold text-indigo-600">
+                Week 2 Data (Comparison)
+              </span>
             </label>
             <input
               id="file2"
@@ -220,22 +286,73 @@ export default function App() {
           {/* Detect Button */}
           <button
             onClick={detectChanges}
-            disabled={
-              !week1Data || !week2Data || statusMessage.includes("Detecting")
-            }
-            className="mt-6 w-full py-3 px-4 bg-indigo-600 text-white font-semibold rounded-lg shadow-md hover:bg-indigo-700 disabled:bg-indigo-300 disabled:cursor-not-allowed"
+            disabled={!week1Data || !week2Data || isDetecting}
+            className="mt-6 w-full py-3 px-4 bg-indigo-600 text-white font-semibold rounded-lg shadow-md hover:bg-indigo-700 disabled:bg-indigo-300 disabled:cursor-not-allowed transition duration-150"
           >
-            {statusMessage.includes("Detecting")
-              ? "Processing..."
-              : "Detect Changes"}
+            {isDetecting ? "Processing..." : "Detect Changes"}
           </button>
 
           <p className="text-center text-sm text-gray-500 border-t pt-4 italic">
             {statusMessage}
           </p>
 
+          {/* Legend */}
+          <div className="pt-4 border-t border-gray-100">
+            <h3 className="text-sm font-semibold text-gray-700 mb-2">
+              Map Legend
+            </h3>
+            <ul className="text-xs space-y-1">
+              <li
+                className={`flex items-center ${showRawData ? "font-semibold" : "opacity-50"}`}
+              >
+                <span
+                  className="w-6 h-1 mr-2 rounded"
+                  style={{
+                    backgroundColor: week1Style.color,
+                    opacity: week1Style.opacity,
+                  }}
+                ></span>
+                <span className="text-gray-600">Week 1 (Baseline)</span>
+              </li>
+              <li
+                className={`flex items-center ${showRawData ? "font-semibold" : "opacity-50"}`}
+              >
+                <span
+                  className="w-6 h-1 mr-2 rounded"
+                  style={{
+                    backgroundColor: week2Style.color,
+                    opacity: week2Style.opacity,
+                  }}
+                ></span>
+                <span className="text-gray-600">Week 2 (Comparison)</span>
+              </li>
+              <li
+                className={`flex items-center ${hasChanges ? "font-semibold" : "opacity-50"}`}
+              >
+                <span
+                  className="w-6 h-1 mr-2 rounded"
+                  style={{ backgroundColor: newRoadsStyle.color }}
+                ></span>
+                <span className="text-green-600 font-medium">
+                  New Road (ADDED)
+                </span>
+              </li>
+              <li
+                className={`flex items-center ${hasChanges ? "font-semibold" : "opacity-50"}`}
+              >
+                <span
+                  className="w-6 h-1 mr-2 rounded"
+                  style={{ backgroundColor: removedRoadsStyle.color }}
+                ></span>
+                <span className="text-red-600 font-medium">
+                  Removed Road (DELETED)
+                </span>
+              </li>
+            </ul>
+          </div>
+
           {/* Change Report */}
-          {changes && (
+          {hasChanges && (
             <div className="mt-6 p-4 bg-gray-50 rounded-lg shadow-inner border">
               <h3 className="text-lg font-bold mb-3 text-gray-800">
                 Change Report
@@ -279,7 +396,15 @@ export default function App() {
               attribution='&copy; <a href="http://osm.org/copyright">OpenStreetMap</a> contributors'
             />
 
-            {/* Render Features by Change Type */}
+            {/* ALWAYS render raw files */}
+            {week1Data && (
+              <GeoJSON key="week1" data={week1Data} style={week1Style} />
+            )}
+            {week2Data && (
+              <GeoJSON key="week2" data={week2Data} style={week2Style} />
+            )}
+
+            {/* Overlay detected changes on top */}
             {changes && (
               <>
                 <GeoJSON
@@ -305,7 +430,7 @@ export default function App() {
               </>
             )}
 
-            {/* Fit bounds to changes, else uploaded baseline+comparison */}
+            {/* Fit bounds to data */}
             {dataForBounds && <FitBounds data={dataForBounds} />}
           </MapContainer>
         </div>
