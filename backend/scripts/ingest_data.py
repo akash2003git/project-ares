@@ -1,88 +1,73 @@
-"""
-ingest_data.py
-Usage:
-    python ingest_data.py <geojson_file> <week> [--replace]
-
-Ingests a GeoJSON FeatureCollection with LineString/MultiLineString features into PostGIS.
-Optionally replace existing rows for the same week.
-"""
-
 import psycopg2
 import json
-import argparse
 import os
+import psycopg2.extras
 from datetime import datetime
 
-DB_HOST = "localhost"
-DB_NAME = "road_db"
-DB_USER = "akash"
-DB_PASSWORD = "akash"
+# NOTE: This script is designed to be called by app.py and uses the
+# connection object passed to it, rather than connecting globally.
 
 
-def ensure_table(conn):
-    cur = conn.cursor()
-    cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS road_networks (
-            id SERIAL PRIMARY KEY,
-            week INTEGER NOT NULL,
-            feature_type TEXT,
-            road_geom GEOMETRY(MultiLineString, 4326),
-            created_at TIMESTAMP DEFAULT now()
-        );
-        """
+def ingest_features_from_geojson(conn, geojson_path: str, snapshot_id: int):
+    """
+    Reads a GeoJSON file from disk and bulk inserts road features into the
+    'road_features' table, linked to the given snapshot_id.
+
+    Args:
+        conn: The active psycopg2 database connection object (g.db).
+        geojson_path: The path to the GeoJSON file to ingest.
+        snapshot_id: The ID of the parent road_snapshot record.
+    """
+    print(
+        f"--- Starting Ingestion for Snapshot ID: {snapshot_id} from {os.path.basename(geojson_path)} ---"
     )
-    conn.commit()
-    cur.close()
 
-
-def ingest(geojson_path, week, replace=False):
     if not os.path.exists(geojson_path):
-        raise FileNotFoundError(geojson_path)
+        raise FileNotFoundError(
+            f"GeoJSON file not found for ingestion at {geojson_path}"
+        )
 
     with open(geojson_path, "r") as f:
         geo = json.load(f)
 
-    conn = psycopg2.connect(
-        host=DB_HOST, database=DB_NAME, user=DB_USER, password=DB_PASSWORD
-    )
+    cur = conn.cursor()
+    insert_count = 0
     try:
-        ensure_table(conn)
-        cur = conn.cursor()
-
-        if replace:
-            cur.execute("DELETE FROM road_networks WHERE week = %s;", (week,))
-            conn.commit()
-
-        # insert each feature; convert geometry to MultiLineString on insert
+        # SQL template for insertion into our road_features table
         insert_sql = """
-            INSERT INTO road_networks (week, feature_type, road_geom)
+            INSERT INTO road_features (snapshot_id, feature_type, road_geom)
             VALUES (%s, %s, ST_Multi(ST_SetSRID(ST_GeomFromGeoJSON(%s), 4326)))
         """
+
+        # NOTE: Since the model_processor returns a FeatureCollection with usually one
+        # MultiLineString feature, we iterate over features to handle any valid GeoJSON.
 
         for feat in geo.get("features", []):
             geom = feat.get("geometry")
             if geom is None:
                 continue
+
+            # The GeoJSON dictionary is dumped back to a string for PostGIS ingestion
             geom_json = json.dumps(geom)
-            feature_type = geom.get("type")
-            cur.execute(insert_sql, (week, feature_type, geom_json))
 
-        conn.commit()
-        cur.close()
-        print(f"Week {week} data ingested successfully from {geojson_path}.")
+            # Use the geometry type as the feature_type
+            feature_type = geom.get("type", "MultiLineString")
 
+            cur.execute(insert_sql, (snapshot_id, feature_type, geom_json))
+            insert_count += 1
+
+        print(
+            f"--- Successfully inserted {insert_count} road features for snapshot {snapshot_id}. ---"
+        )
+
+    except Exception as e:
+        print(f"Ingestion Failed: {e}")
+        # Re-raise the exception. The rollback will be handled by the @app.after_request
+        # logic or the main route's exception handler in app.py.
+        raise
     finally:
-        conn.close()
+        cur.close()
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("geojson", help="Path to GeoJSON file (FeatureCollection)")
-    parser.add_argument("week", type=int, help="Week id (integer)")
-    parser.add_argument(
-        "--replace", action="store_true", help="Replace existing week data"
-    )
-    args = parser.parse_args()
-
-    ingest(args.geojson, args.week, replace=args.replace)
+    print("Ingestion script is not designed to be run standalone.")
