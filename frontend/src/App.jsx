@@ -1,362 +1,315 @@
-import React, { useState, useEffect, useCallback } from "react";
-// Assuming Tailwind CSS is available in the environment
+import { MapContainer, TileLayer, GeoJSON, useMap } from "react-leaflet";
+import { useState, useEffect, useCallback } from "react";
+import L from "leaflet";
 
-const API_BASE_URL = "/api";
+// --- Leaflet Setup ---
+delete L.Icon.Default.prototype._getIconUrl;
+L.Icon.Default.mergeOptions({
+  iconRetinaUrl:
+    "https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon-2x.png",
+  iconUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png",
+  shadowUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png",
+});
 
-/**
- * Custom hook to simulate fetching existing AOIs (as the backend routes were omitted for brevity).
- */
-const useAOIs = () => {
-  const [aois, setAois] = useState([]);
-  const [loading, setLoading] = useState(true);
-
+// Helper: Auto-fit bounds when new data is loaded
+function FitBounds({ data }) {
+  const map = useMap();
   useEffect(() => {
-    // In a real application, this would fetch from /api/aois
-    setTimeout(() => {
-      setAois([
-        {
-          id: 1,
-          name: "Area 51 - Test Track",
-          image_name: "area_51_w1.tiff",
-          snapshot_count: 2,
-        },
-        {
-          id: 2,
-          name: "Dubai Jebel Ali - Port Expansion",
-          image_name: "dubai_port_w1.tiff",
-          snapshot_count: 3,
-        },
-        {
-          id: 3,
-          name: "Remote Town Site - Needs Second Snapshot",
-          image_name: "remote_town_w1.tiff",
-          snapshot_count: 1,
-        },
-      ]);
-      setLoading(false);
-    }, 1000);
-  }, []);
+    if (data && data.type === "FeatureCollection" && data.features.length > 0) {
+      try {
+        const geoJsonLayer = L.geoJSON(data);
+        map.fitBounds(geoJsonLayer.getBounds(), {
+          padding: [40, 40],
+          maxZoom: 15,
+        });
+      } catch (e) {
+        console.error("Could not fit bounds: Invalid GeoJSON structure.", e);
+      }
+    }
+  }, [data, map]);
+  return null;
+}
 
-  return { aois, loading, setAois };
-};
+const defaultPosition = [21.01, 79.11]; // Nagpur fallback
 
-// --- Sub-Components ---
+export default function App() {
+  const [week1Data, setWeek1Data] = useState(null);
+  const [week2Data, setWeek2Data] = useState(null);
+  const [changes, setChanges] = useState(null);
+  const [statusMessage, setStatusMessage] = useState(
+    "Upload two GeoJSON files and click 'Detect Changes'.",
+  );
+  const [fileName1, setFileName1] = useState("Week 1 File (GeoJSON)");
+  const [fileName2, setFileName2] = useState("Week 2 File (GeoJSON)");
 
-/**
- * Component to display GeoJSON results as formatted JSON.
- */
-const JsonDisplay = ({ data, title }) => (
-  <div className="bg-gray-800 p-4 rounded-lg shadow-inner font-mono text-xs text-green-300 h-96 overflow-y-scroll">
-    <h3 className="text-sm font-semibold mb-2 text-white border-b border-gray-700 pb-1">
-      {title}
-    </h3>
-    <pre>{JSON.stringify(data, null, 2)}</pre>
-  </div>
-);
+  // --- File Handling ---
+  const handleFileUpload = (event, setData, setFileName) => {
+    const file = event.target.files[0];
+    if (!file) return;
 
-/**
- * Component for the stateless GeoJSON file upload and detection.
- */
-const DemoUploader = () => {
-  const [fileOld, setFileOld] = useState(null);
-  const [fileNew, setFileNew] = useState(null);
-  const [result, setResult] = useState(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState(null);
+    setFileName(file.name);
+    setStatusMessage(`Loading ${file.name}...`);
+    setData(null);
 
-  const handleDetect = useCallback(async () => {
-    if (!fileOld || !fileNew) {
-      setError("Please select both 'Old' and 'New' GeoJSON files.");
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const json = JSON.parse(e.target.result);
+        if (!json.type || !json.features) {
+          throw new Error(
+            "Invalid GeoJSON format: Missing 'type' or 'features'.",
+          );
+        }
+        setData(json);
+        setStatusMessage(
+          `Successfully loaded ${file.name}. Ready for detection.`,
+        );
+      } catch (error) {
+        setData(null);
+        setFileName("Error loading file");
+        setStatusMessage(
+          `Error parsing GeoJSON from ${file.name}: ${error.message}`,
+        );
+        console.error("File parsing error:", error);
+      }
+    };
+    reader.onerror = () => {
+      setStatusMessage("Failed to read file.");
+      setData(null);
+      setFileName("File read error");
+    };
+    reader.readAsText(file);
+  };
+
+  // --- Call backend for change detection ---
+  const detectChanges = useCallback(async () => {
+    if (!week1Data || !week2Data) {
+      setStatusMessage("Please upload both Week 1 and Week 2 GeoJSON files.");
       return;
     }
 
-    setLoading(true);
-    setError(null);
-    setResult(null);
+    setStatusMessage("Uploading files to backend for change detection...");
+    setChanges(null);
 
     const formData = new FormData();
-    formData.append("file_old", fileOld);
-    formData.append("file_new", fileNew);
+    formData.append("file_old", document.getElementById("file1").files[0]);
+    formData.append("file_new", document.getElementById("file2").files[0]);
 
     try {
-      const response = await fetch(`${API_BASE_URL}/demo/change_detection`, {
-        method: "POST",
-        body: formData,
-      });
-
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(data.error || "Stateless detection failed.");
-      }
-      setResult(data);
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setLoading(false);
-    }
-  }, [fileOld, fileNew]);
-
-  return (
-    <div className="p-6 bg-white rounded-xl shadow-lg border border-gray-100">
-      <h2 className="text-2xl font-bold text-gray-800 mb-4">
-        Stateless GeoJSON Demo
-      </h2>
-      <p className="text-sm text-gray-500 mb-6">
-        Upload two GeoJSON road network files for immediate, database-free
-        change detection using the dedicated API route.
-      </p>
-
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">
-            Snapshot A (Old)
-          </label>
-          <input
-            type="file"
-            accept=".geojson"
-            onChange={(e) => setFileOld(e.target.files[0])}
-            className="w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100"
-          />
-        </div>
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">
-            Snapshot B (New)
-          </label>
-          <input
-            type="file"
-            accept=".geojson"
-            onChange={(e) => setFileNew(e.target.files[0])}
-            className="w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100"
-          />
-        </div>
-      </div>
-
-      <button
-        onClick={handleDetect}
-        disabled={loading || !fileOld || !fileNew}
-        className="w-full px-4 py-2 bg-indigo-600 text-white font-semibold rounded-full hover:bg-indigo-700 transition duration-150 disabled:bg-indigo-300 disabled:cursor-not-allowed"
-      >
-        {loading ? "Processing Changes..." : "Run Stateless Detection"}
-      </button>
-
-      {error && (
-        <p className="mt-4 text-red-600 text-sm font-medium">{error}</p>
-      )}
-
-      <div className="mt-6">
-        <JsonDisplay
-          data={result || {}}
-          title="Detection Result (GeoJSON FeatureCollection)"
-        />
-      </div>
-    </div>
-  );
-};
-
-/**
- * Component for interacting with a specific AOI and its database snapshots.
- */
-const AOIChangeDetector = ({ aois, loadingAOIs, refreshAOIs }) => {
-  const [selectedAoiId, setSelectedAoiId] = useState("");
-  const [result, setResult] = useState(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState(null);
-
-  const selectedAoi = aois.find((a) => a.id === parseInt(selectedAoiId));
-
-  // 1. Database Diff Handler
-  const handleDetectDatabase = useCallback(async () => {
-    if (!selectedAoiId || selectedAoi.snapshot_count < 2) {
-      setError(
-        "AOI must be selected and must have at least 2 snapshots for comparison.",
-      );
-      return;
-    }
-
-    setLoading(true);
-    setError(null);
-    setResult(null);
-
-    try {
-      const response = await fetch(
-        `${API_BASE_URL}/aois/${selectedAoiId}/detect_changes`,
-        {
-          method: "GET",
-        },
-      );
-
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(data.error || "Database change detection failed.");
-      }
-      setResult(data);
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setLoading(false);
-    }
-  }, [selectedAoiId, selectedAoi]);
-
-  // 2. Scheduled Processing Simulation Handler
-  const handleProcessNewSnapshot = useCallback(async () => {
-    if (!selectedAoiId) {
-      setError("Please select an AOI to process a new snapshot.");
-      return;
-    }
-
-    setLoading(true);
-    setError(null);
-    setResult(null);
-
-    try {
-      const response = await fetch(
-        `${API_BASE_URL}/aois/${selectedAoiId}/process_new_snapshot`,
+      const res = await fetch(
+        "http://127.0.0.1:5000/api/demo/change_detection",
         {
           method: "POST",
+          body: formData,
         },
       );
 
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(data.error || "New snapshot processing failed.");
+      if (!res.ok) {
+        throw new Error(`Backend error: ${res.status}`);
       }
 
-      setResult(data);
-      refreshAOIs(data.aoi_id); // Update the AOI list to show the new snapshot count (simulated)
+      const data = await res.json();
+      setChanges(data);
+      setStatusMessage("Change detection complete. Visualizing results.");
     } catch (err) {
-      setError(err.message);
-    } finally {
-      setLoading(false);
+      console.error("Error calling backend:", err);
+      setStatusMessage(`Error: ${err.message}`);
     }
-  }, [selectedAoiId, refreshAOIs]);
+  }, [week1Data, week2Data]);
+
+  // Styles
+  const newRoadsStyle = {
+    color: "#10B981",
+    weight: 5,
+    opacity: 1,
+    dashArray: "8, 8",
+  };
+  const removedRoadsStyle = {
+    color: "#EF4444",
+    weight: 5,
+    opacity: 1,
+    dashArray: "12, 6",
+  };
+
+  // Pick data to fit bounds: prefer detected changes, else uploaded files
+  const dataForBounds =
+    changes ||
+    (week1Data &&
+      week2Data && {
+        type: "FeatureCollection",
+        features: [...week1Data.features, ...week2Data.features],
+      });
 
   return (
-    <div className="p-6 bg-white rounded-xl shadow-lg border border-gray-100">
-      <h2 className="text-2xl font-bold text-gray-800 mb-4">
-        AOI Monitoring & Database Diff
-      </h2>
-      <p className="text-sm text-gray-500 mb-6">
-        Test the scheduled processing simulation and the primary
-        database-to-database change detection route.
-      </p>
-
-      <div className="mb-6">
-        <label
-          htmlFor="aoi-select"
-          className="block text-sm font-medium text-gray-700 mb-1"
-        >
-          Select AOI
-        </label>
-        <select
-          id="aoi-select"
-          value={selectedAoiId}
-          onChange={(e) => setSelectedAoiId(e.target.value)}
-          disabled={loadingAOIs || loading}
-          className="w-full p-2 border border-gray-300 rounded-lg shadow-sm focus:ring-indigo-500 focus:border-indigo-500"
-        >
-          <option value="" disabled>
-            {loadingAOIs ? "Loading AOIs..." : "Choose an Area of Interest"}
-          </option>
-          {aois.map((aoi) => (
-            <option key={aoi.id} value={aoi.id}>
-              {aoi.name} ({aoi.snapshot_count} snapshots)
-            </option>
-          ))}
-        </select>
-        {selectedAoi && selectedAoi.snapshot_count < 2 && (
-          <p className="mt-2 text-yellow-600 text-xs">
-            Requires at least 2 snapshots to run database comparison.
-          </p>
-        )}
-      </div>
-
-      <div className="flex flex-col space-y-3 mb-6">
-        <button
-          onClick={handleProcessNewSnapshot}
-          disabled={loading || !selectedAoiId}
-          className="px-4 py-2 bg-green-600 text-white font-semibold rounded-full hover:bg-green-700 transition duration-150 disabled:bg-green-300 disabled:cursor-not-allowed"
-        >
-          {loading
-            ? "Simulating..."
-            : "1. Simulate New Snapshot Process (POST)"}
-        </button>
-        <button
-          onClick={handleDetectDatabase}
-          disabled={
-            loading || !selectedAoiId || selectedAoi?.snapshot_count < 2
-          }
-          className="px-4 py-2 bg-blue-600 text-white font-semibold rounded-full hover:bg-blue-700 transition duration-150 disabled:bg-blue-300 disabled:cursor-not-allowed"
-        >
-          {loading
-            ? "Detecting Changes..."
-            : "2. Run Database Change Detection (GET)"}
-        </button>
-      </div>
-
-      {error && (
-        <p className="mt-4 text-red-600 text-sm font-medium">{error}</p>
-      )}
-
-      <div className="mt-6">
-        <JsonDisplay data={result || {}} title="API Response" />
-      </div>
-    </div>
-  );
-};
-
-const App = () => {
-  const { aois, loading: loadingAOIs, setAois } = useAOIs();
-
-  // Simple function to simulate updating the snapshot count after processing
-  const refreshAOIs = useCallback(
-    (aoiId) => {
-      setAois((prevAois) =>
-        prevAois.map((aoi) =>
-          aoi.id === aoiId
-            ? { ...aoi, snapshot_count: aoi.snapshot_count + 1 }
-            : aoi,
-        ),
-      );
-    },
-    [setAois],
-  );
-
-  return (
-    <div className="min-h-screen bg-gray-50 p-8 font-sans">
-      <header className="text-center mb-10">
-        <h1 className="text-4xl font-extrabold text-gray-900">
-          Project Ares: Change Detection Testing Console
+    <div className="min-h-screen bg-gray-50 flex flex-col font-sans">
+      <header className="bg-white shadow p-4 sticky top-0 z-10">
+        <h1 className="text-3xl font-bold text-gray-800 tracking-tight">
+          <span className="text-indigo-600">GeoRoad</span> Change Detection
         </h1>
-        <p className="text-lg text-gray-600 mt-2">
-          Verify PostGIS differential analysis and monitoring workflows.
-        </p>
       </header>
 
-      <div className="max-w-7xl mx-auto grid grid-cols-1 lg:grid-cols-2 gap-8">
-        <DemoUploader />
-        <AOIChangeDetector
-          aois={aois}
-          loadingAOIs={loadingAOIs}
-          refreshAOIs={refreshAOIs}
-        />
-      </div>
+      <main className="flex flex-1 flex-col lg:flex-row p-4 space-y-4 lg:space-y-0 lg:space-x-4 overflow-hidden">
+        {/* Control Panel */}
+        <div className="lg:w-1/3 xl:w-1/4 bg-white p-6 rounded-xl shadow-lg space-y-6 flex flex-col">
+          <h2 className="text-xl font-semibold text-gray-700 border-b pb-2 mb-2">
+            Upload Data
+          </h2>
 
-      <div className="max-w-7xl mx-auto mt-10 p-6 bg-yellow-50 border-l-4 border-yellow-400 rounded-lg">
-        <h3 className="text-lg font-semibold text-yellow-800">
-          Visualization Note
-        </h3>
-        <p className="text-sm text-yellow-700">
-          In a production environment, the GeoJSON results in the JSON Display
-          would be fed to a map library (like Leaflet or Mapbox) to visually
-          highlight the added (e.g., green) and removed (e.g., red) roads on top
-          of the base map imagery.
-        </p>
-      </div>
+          {/* Upload Week 1 */}
+          <div className="space-y-2">
+            <label
+              htmlFor="file1"
+              className="block text-sm font-medium text-gray-700"
+            >
+              <span className="font-bold text-indigo-600">Week 1 Data</span>{" "}
+              (Baseline)
+            </label>
+            <input
+              id="file1"
+              type="file"
+              accept=".geojson, .json"
+              onChange={(e) => handleFileUpload(e, setWeek1Data, setFileName1)}
+              className="hidden"
+            />
+            <button
+              onClick={() => document.getElementById("file1").click()}
+              className="w-full text-left p-3 border-2 border-dashed border-gray-300 rounded-lg hover:border-indigo-500 transition text-sm text-gray-600 hover:text-indigo-600 truncate"
+            >
+              <span
+                className={
+                  week1Data ? "text-green-600 font-medium" : "text-gray-500"
+                }
+              >
+                {week1Data ? "Loaded: " : "Upload: "}
+              </span>
+              {fileName1}
+            </button>
+          </div>
+
+          {/* Upload Week 2 */}
+          <div className="space-y-2">
+            <label
+              htmlFor="file2"
+              className="block text-sm font-medium text-gray-700"
+            >
+              <span className="font-bold text-indigo-600">Week 2 Data</span>{" "}
+              (Comparison)
+            </label>
+            <input
+              id="file2"
+              type="file"
+              accept=".geojson, .json"
+              onChange={(e) => handleFileUpload(e, setWeek2Data, setFileName2)}
+              className="hidden"
+            />
+            <button
+              onClick={() => document.getElementById("file2").click()}
+              className="w-full text-left p-3 border-2 border-dashed border-gray-300 rounded-lg hover:border-indigo-500 transition text-sm text-gray-600 hover:text-indigo-600 truncate"
+            >
+              <span
+                className={
+                  week2Data ? "text-green-600 font-medium" : "text-gray-500"
+                }
+              >
+                {week2Data ? "Loaded: " : "Upload: "}
+              </span>
+              {fileName2}
+            </button>
+          </div>
+
+          {/* Detect Button */}
+          <button
+            onClick={detectChanges}
+            disabled={
+              !week1Data || !week2Data || statusMessage.includes("Detecting")
+            }
+            className="mt-6 w-full py-3 px-4 bg-indigo-600 text-white font-semibold rounded-lg shadow-md hover:bg-indigo-700 disabled:bg-indigo-300 disabled:cursor-not-allowed"
+          >
+            {statusMessage.includes("Detecting")
+              ? "Processing..."
+              : "Detect Changes"}
+          </button>
+
+          <p className="text-center text-sm text-gray-500 border-t pt-4 italic">
+            {statusMessage}
+          </p>
+
+          {/* Change Report */}
+          {changes && (
+            <div className="mt-6 p-4 bg-gray-50 rounded-lg shadow-inner border">
+              <h3 className="text-lg font-bold mb-3 text-gray-800">
+                Change Report
+              </h3>
+              <div className="space-y-2">
+                <p className="text-green-600 flex justify-between">
+                  <span>New Roads:</span>
+                  <span className="font-mono font-bold">
+                    {changes?.metadata?.new_length_m?.toFixed(2) ?? 0} m
+                  </span>
+                </p>
+                <p className="text-red-600 flex justify-between">
+                  <span>Removed Roads:</span>
+                  <span className="font-mono font-bold">
+                    {changes?.metadata?.removed_length_m?.toFixed(2) ?? 0} m
+                  </span>
+                </p>
+                <p className="text-gray-800 font-bold flex justify-between border-t mt-2 pt-2">
+                  <span>Total Change:</span>
+                  <span className="font-mono">
+                    {changes?.metadata?.total_change_m?.toFixed(2) ?? 0} m
+                  </span>
+                </p>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Map */}
+        <div className="lg:flex-1 h-[60vh] lg:h-auto rounded-xl shadow-xl overflow-hidden">
+          <MapContainer
+            center={defaultPosition}
+            zoom={13}
+            scrollWheelZoom={true}
+            minZoom={10}
+            maxZoom={17}
+            className="w-full h-full"
+          >
+            <TileLayer
+              url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+              attribution='&copy; <a href="http://osm.org/copyright">OpenStreetMap</a> contributors'
+            />
+
+            {/* Render Features by Change Type */}
+            {changes && (
+              <>
+                <GeoJSON
+                  key="new"
+                  data={{
+                    type: "FeatureCollection",
+                    features: changes.features.filter(
+                      (f) => f.properties.change_type === "ADDED",
+                    ),
+                  }}
+                  style={newRoadsStyle}
+                />
+                <GeoJSON
+                  key="removed"
+                  data={{
+                    type: "FeatureCollection",
+                    features: changes.features.filter(
+                      (f) => f.properties.change_type === "DELETED",
+                    ),
+                  }}
+                  style={removedRoadsStyle}
+                />
+              </>
+            )}
+
+            {/* Fit bounds to changes, else uploaded baseline+comparison */}
+            {dataForBounds && <FitBounds data={dataForBounds} />}
+          </MapContainer>
+        </div>
+      </main>
     </div>
   );
-};
-
-export default App;
+}

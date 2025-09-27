@@ -3,9 +3,11 @@ import psycopg2.errors
 import json
 import os
 import sys
+import uuid  # <-- ADDED: Required for the stateless demo route
 from flask import Flask, jsonify, request, session, g
 from flask_bcrypt import Bcrypt
 from datetime import datetime
+from flask_cors import CORS
 
 # Local Imports
 from config import Config
@@ -31,6 +33,7 @@ except ImportError as e:
 app = Flask(__name__)
 app.config.from_object(Config)
 
+CORS(app)
 # Initialize Flask-Bcrypt
 bcrypt = Bcrypt(app)
 
@@ -41,6 +44,9 @@ DB_CONN = None
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 TIFF_BASE_DIR = os.path.join(BASE_DIR)  # Assuming TIFFs are in the backend root
 STORAGE_DIR = os.path.join(BASE_DIR, "storage")
+DEMO_TEMP_DIR = os.path.join(
+    STORAGE_DIR, "demo_temp"
+)  # <-- ADDED: Temporary directory for demo uploads
 app.config["STORAGE_DIR"] = STORAGE_DIR  # Save this path in config
 
 
@@ -101,13 +107,23 @@ def after_request(response):
     return response
 
 
-# --- AUTHENTICATION ROUTES (Omitted for brevity, but assumed to be here) ---
+@app.teardown_appcontext  # <-- ADDED: Explicitly handles connection closing
+def close_db_connection(exception):
+    """Closes the database connection at the end of the request context."""
+    global DB_CONN
+    if DB_CONN is not None and DB_CONN.closed == 0:
+        try:
+            DB_CONN.close()
+            DB_CONN = None
+        except Exception as e:
+            print(f"Error closing DB connection in teardown: {e}")
+
+
+# --- AUTHENTICATION ROUTES (Retained for completeness) ---
 
 
 @app.route("/api/auth/signup", methods=["POST"])
-# ... (your existing signup code)
 def signup():
-    # ... (omitted for file size, assume working)
     data = request.get_json()
     email = data.get("email")
     password = data.get("password")
@@ -153,9 +169,7 @@ def signup():
 
 
 @app.route("/api/auth/login", methods=["POST"])
-# ... (your existing login code)
 def login():
-    # ... (omitted for file size, assume working)
     data = request.get_json()
     email = data.get("email")
     password = data.get("password")
@@ -261,7 +275,7 @@ def create_aoi_and_snapshot():
 
     # ----------------------------------------------------
     # START SYNCHRONOUS, LONG-RUNNING PROCESS (Transaction Begins)
-    # All database operations are wrapped in this try/except block.
+    # WARNING: THIS IS BLOCKING. Consider Celery/RQ for production.
     # ----------------------------------------------------
     try:
         # 4. Insert AOI Row (The Parent Record)
@@ -578,6 +592,11 @@ def delete_aoi(aoi_id):
         cur.close()
 
 
+# ----------------------------------------------------------------------
+# --- NEW ROUTES FOR SCHEDULING AND CHANGE DETECTION ---
+# ----------------------------------------------------------------------
+
+
 @app.route("/api/aois/<int:aoi_id>/process_new_snapshot", methods=["POST"])
 def process_new_snapshot(aoi_id):
     """
@@ -675,9 +694,6 @@ def demo_change_detection():
     """
     Stateless route: Accepts two GeoJSON files, runs change detection locally,
     returns the changes, and cleans up temporary files immediately.
-
-    NOTE: Although called 'stateless', this implementation temporarily uses
-    the database to leverage the complex PostGIS change detection logic.
     """
     if "file_old" not in request.files or "file_new" not in request.files:
         return (
@@ -716,7 +732,7 @@ def demo_change_detection():
         )
 
         # 2. RUN CHANGE DETECTION SCRIPT
-        # The script accesses g.db internally for temporary geometric union/diff ops
+        # The script accesses the database connection (g.db) for PostGIS operations
         change_geojson = detect_changes_stateless(path_old, path_new)
 
         print("[DEMO] Stateless detection complete.")
@@ -741,7 +757,7 @@ def demo_change_detection():
 
 
 # ----------------------------------------------------------------------
-# --- MAIN CHANGE DETECTION ROUTE (Now using the script!) ---
+# --- MAIN CHANGE DETECTION ROUTE ---
 # ----------------------------------------------------------------------
 
 
