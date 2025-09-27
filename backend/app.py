@@ -360,6 +360,111 @@ def create_aoi_and_snapshot():
         cur.close()
 
 
+@app.route("/api/aois", methods=["GET"])
+def get_all_aois():
+    """
+    Retrieves a list of all AOIs for the authenticated user, including the BBOX as text.
+    """
+    user_id = get_current_user_id()
+    if not user_id:
+        return jsonify({"error": "Authentication required."}), 401
+
+    conn = g.db
+    cur = conn.cursor()
+
+    try:
+        # We use ST_AsText(bbox) to return the geometry as a human-readable WKT string
+        cur.execute(
+            """
+            SELECT id, name, image_name, frequency, created_at, ST_AsText(bbox)
+            FROM aois
+            WHERE user_id = %s
+            ORDER BY created_at DESC;
+            """,
+            (user_id,),
+        )
+        aois_data = cur.fetchall()
+
+        aois_list = [
+            {
+                "id": row[0],
+                "name": row[1],
+                "image_name": row[2],
+                "frequency": row[3],
+                "created_at": row[4].isoformat(),
+                "bbox_wkt": row[5],  # WKT string for visualization context
+            }
+            for row in aois_data
+        ]
+
+        return jsonify(aois_list), 200
+
+    except Exception as e:
+        print(f"Error fetching AOIs: {e}")
+        return jsonify({"error": "Failed to retrieve AOI list."}), 500
+    finally:
+        cur.close()
+
+
+@app.route("/api/aois/<int:aoi_id>/latest_features", methods=["GET"])
+def get_latest_aoi_features(aoi_id):
+    """
+    Retrieves the road features (geometry) for the latest snapshot of a given AOI
+    and returns it directly as a GeoJSON FeatureCollection.
+    """
+    user_id = get_current_user_id()
+    if not user_id:
+        return jsonify({"error": "Authentication required."}), 401
+
+    conn = g.db
+    cur = conn.cursor()
+
+    try:
+        # Step 1: Find the ID of the latest road_snapshot for this AOI
+        cur.execute(
+            """
+            SELECT rs.id
+            FROM road_snapshots rs
+            JOIN aois a ON rs.aoi_id = a.id
+            WHERE a.id = %s AND a.user_id = %s
+            ORDER BY rs.capture_date DESC
+            LIMIT 1;
+            """,
+            (aoi_id, user_id),
+        )
+        snapshot_id_record = cur.fetchone()
+
+        if not snapshot_id_record:
+            return jsonify({"error": "AOI not found or no snapshots exist."}), 404
+
+        latest_snapshot_id = snapshot_id_record[0]
+
+        # Step 2: Use PostGIS to aggregate all features from that snapshot into a single GeoJSON object
+        # The query generates a GeoJSON feature for every row and aggregates them into a FeatureCollection.
+        cur.execute(
+            """
+            SELECT json_build_object(
+                'type', 'FeatureCollection',
+                'features', json_agg(ST_AsGeoJSON(rf.*)::json)
+            )
+            FROM road_features rf
+            WHERE rf.snapshot_id = %s;
+            """,
+            (latest_snapshot_id,),
+        )
+
+        geojson_result = cur.fetchone()[0]
+
+        # The result is already a perfectly formatted GeoJSON dictionary (not a string)
+        return jsonify(geojson_result), 200
+
+    except Exception as e:
+        print(f"Error fetching features for AOI {aoi_id}: {e}")
+        return jsonify({"error": "Failed to retrieve road features."}), 500
+    finally:
+        cur.close()
+
+
 # --- HEALTH CHECK ROUTE ---
 
 
