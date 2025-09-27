@@ -13,6 +13,7 @@
 # Large geospatial data files
 *.tif
 *.tiff
+*.geojson
 
 # ----------------------------------------
 # Python / Backend

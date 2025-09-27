@@ -16,6 +16,10 @@ try:
     # These imports rely on the functions being updated to match the expected signature
     from scripts.model_processor import get_road_geojson
     from scripts.ingest_data import ingest_features_from_geojson
+    from scripts.change_detection import (
+        detect_changes_stateless,
+        detect_changes_database,
+    )
 except ImportError as e:
     print(
         f"Error importing scripts: {e}. Check that scripts/model_processor.py and scripts/ingest_data.py exist."
@@ -461,6 +465,349 @@ def get_latest_aoi_features(aoi_id):
     except Exception as e:
         print(f"Error fetching features for AOI {aoi_id}: {e}")
         return jsonify({"error": "Failed to retrieve road features."}), 500
+    finally:
+        cur.close()
+
+
+@app.route("/api/aois/<int:aoi_id>", methods=["PUT"])
+def update_aoi_metadata(aoi_id):
+    """
+    Updates the name and frequency of a specific AOI.
+    """
+    user_id = get_current_user_id()
+    if not user_id:
+        return jsonify({"error": "Authentication required."}), 401
+
+    data = request.get_json()
+    name = data.get("name")
+    frequency = data.get("frequency")
+
+    if not name or not frequency:
+        return (
+            jsonify({"error": "Both 'name' and 'frequency' are required for update."}),
+            400,
+        )
+
+    conn = g.db
+    cur = conn.cursor()
+
+    try:
+        cur.execute(
+            """
+            UPDATE aois
+            SET name = %s, frequency = %s
+            WHERE id = %s AND user_id = %s
+            RETURNING id;
+            """,
+            (name, frequency, aoi_id, user_id),
+        )
+
+        if cur.rowcount == 0:
+            return jsonify({"error": "AOI not found or unauthorized."}), 404
+
+        return (
+            jsonify(
+                {"message": f"AOI ID {aoi_id} updated successfully.", "aoi_id": aoi_id}
+            ),
+            200,
+        )
+
+    except Exception as e:
+        conn.rollback()
+        print(f"Error updating AOI {aoi_id}: {e}")
+        return jsonify({"error": "An internal error occurred during update."}), 500
+    finally:
+        cur.close()
+
+
+@app.route("/api/aois/<int:aoi_id>", methods=["DELETE"])
+def delete_aoi(aoi_id):
+    """
+    Deletes the AOI and all associated road snapshots and features via cascade delete,
+    and removes the associated local GeoJSON files from the storage directory.
+    """
+    user_id = get_current_user_id()
+    if not user_id:
+        return jsonify({"error": "Authentication required."}), 401
+
+    conn = g.db
+    cur = conn.cursor()
+    files_to_delete = []
+
+    try:
+        # 1. Get file paths BEFORE deleting the AOI (which cascades deletes DB records)
+        cur.execute(
+            "SELECT source_file FROM road_snapshots WHERE aoi_id = %s;", (aoi_id,)
+        )
+        files_to_delete = [row[0] for row in cur.fetchall()]
+
+        # 2. Delete the AOI (ON DELETE CASCADE handles road_snapshots and road_features cleanup)
+        cur.execute(
+            """
+            DELETE FROM aois
+            WHERE id = %s AND user_id = %s
+            RETURNING id;
+            """,
+            (aoi_id, user_id),
+        )
+
+        if cur.rowcount == 0:
+            return jsonify({"error": "AOI not found or unauthorized."}), 404
+
+        # 3. Clean up local files
+        for file_path in files_to_delete:
+            if os.path.exists(file_path):
+                os.remove(file_path)
+                print(f"[CLEANUP] Deleted file: {file_path}")
+
+        return (
+            jsonify(
+                {
+                    "message": f"AOI ID {aoi_id} and all related data deleted successfully, including local files.",
+                    "aoi_id": aoi_id,
+                }
+            ),
+            200,
+        )
+
+    except Exception as e:
+        conn.rollback()
+        print(f"Error deleting AOI {aoi_id}: {e}")
+        return jsonify({"error": "An internal error occurred during deletion."}), 500
+    finally:
+        cur.close()
+
+
+@app.route("/api/aois/<int:aoi_id>/process_new_snapshot", methods=["POST"])
+def process_new_snapshot(aoi_id):
+    """
+    Simulates a scheduled run by fetching the AOI's image, processing it,
+    and ingesting a new snapshot into the database.
+    This route can be called by an internal scheduler (Celery, Cron, etc.).
+    """
+    user_id = get_current_user_id()
+    if not user_id:
+        return jsonify({"error": "Authentication required."}), 401
+
+    conn = g.db
+    cur = conn.cursor()
+    source_file_path = None
+
+    try:
+        # 1. Fetch AOI metadata (image name)
+        cur.execute(
+            "SELECT image_name FROM aois WHERE id = %s AND user_id = %s;",
+            (aoi_id, user_id),
+        )
+        aoi_record = cur.fetchone()
+
+        if not aoi_record:
+            return jsonify({"error": "AOI not found or unauthorized."}), 404
+
+        image_name = aoi_record[0]
+        full_tiff_path = os.path.join(TIFF_BASE_DIR, image_name)
+
+        print(f"[SCHEDULED] Starting re-processing for AOI {aoi_id} on {image_name}...")
+
+        # 2. RUN MODEL PROCESSOR (Reuse logic from AOI creation)
+        geojson_data, _ = get_road_geojson(
+            full_tiff_path
+        )  # BBOX doesn't change, so ignore it
+
+        # 3. Save the new GeoJSON Snapshot file
+        os.makedirs(STORAGE_DIR, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+        geojson_filename = f"aoi_{aoi_id}_snap_{timestamp}.geojson"
+        source_file_path = os.path.join(STORAGE_DIR, geojson_filename)
+
+        with open(source_file_path, "w") as f:
+            json.dump(geojson_data, f)
+
+        # 4. Create new Snapshot Row
+        cur.execute(
+            """
+            INSERT INTO road_snapshots (aoi_id, capture_date, source_file) 
+            VALUES (%s, now(), %s) RETURNING id;
+            """,
+            (aoi_id, source_file_path),
+        )
+        snapshot_id = cur.fetchone()[0]
+        print(f"[SCHEDULED] Created new road snapshot {snapshot_id}.")
+
+        # 5. RUN INGEST SCRIPT (Populate features for the new snapshot)
+        ingest_features_from_geojson(conn, source_file_path, snapshot_id)
+        print(f"[SCHEDULED] Ingestion complete for snapshot {snapshot_id}.")
+
+        # Note: AOI BBOX is NOT updated as it is assumed to be static.
+
+        return (
+            jsonify(
+                {
+                    "message": "New snapshot processed and ingested successfully.",
+                    "aoi_id": aoi_id,
+                    "new_snapshot_id": snapshot_id,
+                }
+            ),
+            201,
+        )
+
+    except Exception as e:
+        conn.rollback()
+        print(f"Scheduled processing error for AOI {aoi_id}: {e}")
+
+        if source_file_path and os.path.exists(source_file_path):
+            os.remove(source_file_path)  # Cleanup file if failure occurred after saving
+
+        return (
+            jsonify(
+                {
+                    "error": f"An internal error occurred during scheduled processing: {e}"
+                }
+            ),
+            500,
+        )
+    finally:
+        cur.close()
+
+
+@app.route("/api/demo/change_detection", methods=["POST"])
+def demo_change_detection():
+    """
+    Stateless route: Accepts two GeoJSON files, runs change detection locally,
+    returns the changes, and cleans up temporary files immediately.
+
+    NOTE: Although called 'stateless', this implementation temporarily uses
+    the database to leverage the complex PostGIS change detection logic.
+    """
+    if "file_old" not in request.files or "file_new" not in request.files:
+        return (
+            jsonify({"error": "Missing 'file_old' and/or 'file_new' GeoJSON files."}),
+            400,
+        )
+
+    file_old = request.files["file_old"]
+    file_new = request.files["file_new"]
+
+    if not file_old.filename.endswith(".geojson") or not file_new.filename.endswith(
+        ".geojson"
+    ):
+        return (
+            jsonify({"error": "Both uploaded files must be GeoJSON (.geojson)."}),
+            400,
+        )
+
+    os.makedirs(DEMO_TEMP_DIR, exist_ok=True)
+    temp_files = []
+
+    try:
+        # 1. Save files temporarily
+        unique_id = uuid.uuid4().hex
+
+        path_old = os.path.join(DEMO_TEMP_DIR, f"{unique_id}_old.geojson")
+        path_new = os.path.join(DEMO_TEMP_DIR, f"{unique_id}_new.geojson")
+
+        file_old.save(path_old)
+        file_new.save(path_new)
+
+        temp_files.extend([path_old, path_new])
+
+        print(
+            f"[DEMO] Running stateless change detection between {path_old} and {path_new}..."
+        )
+
+        # 2. RUN CHANGE DETECTION SCRIPT
+        # The script accesses g.db internally for temporary geometric union/diff ops
+        change_geojson = detect_changes_stateless(path_old, path_new)
+
+        print("[DEMO] Stateless detection complete.")
+
+        # 3. Return result
+        return jsonify(change_geojson), 200
+
+    except Exception as e:
+        # Rollback temporary transaction in case of script failure
+        if g.db:
+            g.db.rollback()
+        print(f"Stateless change detection error: {e}")
+        return (
+            jsonify({"error": f"An error occurred during change detection: {e}"}),
+            500,
+        )
+    finally:
+        # 4. Clean up temporary files regardless of success/failure
+        for f in temp_files:
+            if os.path.exists(f):
+                os.remove(f)
+
+
+# ----------------------------------------------------------------------
+# --- MAIN CHANGE DETECTION ROUTE (Now using the script!) ---
+# ----------------------------------------------------------------------
+
+
+@app.route("/api/aois/<int:aoi_id>/detect_changes", methods=["GET"])
+def detect_aoi_changes(aoi_id):
+    """
+    Retrieves the two latest road snapshots for an AOI and runs change detection
+    between the road_features linked to those two snapshots.
+    """
+    user_id = get_current_user_id()
+    if not user_id:
+        return jsonify({"error": "Authentication required."}), 401
+
+    conn = g.db
+    cur = conn.cursor()
+
+    try:
+        # 1. Get the two latest snapshot IDs for this AOI
+        cur.execute(
+            """
+            SELECT rs.id 
+            FROM road_snapshots rs
+            JOIN aois a ON rs.aoi_id = a.id
+            WHERE a.id = %s AND a.user_id = %s
+            ORDER BY rs.capture_date DESC
+            LIMIT 2;
+            """,
+            (aoi_id, user_id),
+        )
+        snapshots = cur.fetchall()
+
+        if len(snapshots) < 2:
+            return (
+                jsonify(
+                    {
+                        "error": "AOI requires at least two snapshots to perform change detection."
+                    }
+                ),
+                404,
+            )
+
+        # snapshot_new is the most recent (index 0), snapshot_old is the second most recent (index 1)
+        snapshot_new_id = snapshots[0][0]
+        snapshot_old_id = snapshots[1][0]
+
+        # 2. RUN DATABASE-BASED CHANGE DETECTION SCRIPT
+        print(
+            f"[DB CHANGE] Preparing to detect changes between Snapshots {snapshot_old_id} (Old) and {snapshot_new_id} (New)..."
+        )
+
+        # We now use the implemented function
+        change_geojson = detect_changes_database(conn, snapshot_old_id, snapshot_new_id)
+
+        print(f"[DB CHANGE] Change detection successful.")
+
+        return jsonify(change_geojson), 200
+
+    except Exception as e:
+        conn.rollback()
+        print(f"Database change detection error for AOI {aoi_id}: {e}")
+        return (
+            jsonify(
+                {"error": f"An error occurred during database change detection: {e}"}
+            ),
+            500,
+        )
     finally:
         cur.close()
 
