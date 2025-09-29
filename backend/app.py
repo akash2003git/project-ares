@@ -3,17 +3,18 @@ import psycopg2.errors
 import json
 import os
 import sys
-import uuid  # <-- ADDED: Required for the stateless demo route
+import uuid
 from flask import Flask, jsonify, request, session, g
 from flask_bcrypt import Bcrypt
 from datetime import datetime
 from flask_cors import CORS
+from functools import wraps
 
 # Local Imports
+# NOTE: config.py is required for app.config settings
 from config import Config
 
 # Imports for geospatial logic (requires scripts folder to be on path or correctly imported)
-# NOTE: Ensure you have an empty __init__.py in the 'scripts' folder.
 try:
     # These imports rely on the functions being updated to match the expected signature
     from scripts.model_processor import get_road_geojson
@@ -29,25 +30,61 @@ except ImportError as e:
     sys.exit(1)
 
 
-# Initialize Flask App
+# ======================================================================
+# --- INITIALIZATION & CONFIGURATION ---
+# ======================================================================
+
 app = Flask(__name__)
 app.config.from_object(Config)
 
-CORS(app)
-# Initialize Flask-Bcrypt
-bcrypt = Bcrypt(app)
+CORS(
+    app,
+    supports_credentials=True,
+    resources={
+        r"/api/*": {"origins": ["http://localhost:5173", "http://127.0.0.1:5173"]}
+    },
+)
+bcrypt = Bcrypt(app)  # Initialize Flask-Bcrypt for password hashing
 
-# Global variables for DB connection
+# Global variable for DB connection (managed by hooks/teardown)
 DB_CONN = None
 
 # Define directories relative to this file
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-TIFF_BASE_DIR = os.path.join(BASE_DIR)  # Assuming TIFFs are in the backend root
+TIFF_BASE_DIR = os.path.join(BASE_DIR)
 STORAGE_DIR = os.path.join(BASE_DIR, "storage")
-DEMO_TEMP_DIR = os.path.join(
-    STORAGE_DIR, "demo_temp"
-)  # <-- ADDED: Temporary directory for demo uploads
-app.config["STORAGE_DIR"] = STORAGE_DIR  # Save this path in config
+DEMO_TEMP_DIR = os.path.join(STORAGE_DIR, "demo_temp")
+app.config["STORAGE_DIR"] = STORAGE_DIR
+
+# ======================================================================
+# --- DECORATORS & UTILITIES ---
+# ======================================================================
+
+
+def get_current_user_id():
+    """Retrieves the user ID from the Flask session or returns None."""
+    # Uses Flask's client-side session cookie for user identification
+    return session.get("user_id")
+
+
+def login_required(f):
+    """
+    A custom decorator to check for a valid user session before running a route.
+    If authenticated, it stores the user_id in Flask's global 'g' object.
+    """
+
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        user_id = get_current_user_id()
+        if user_id is None:
+            # Return 401 Unauthorized if the user is not logged in
+            return jsonify({"error": "Authentication required."}), 401
+
+        # Store user_id in the request global 'g' object for easy access in the route
+        g.user_id = user_id
+        return f(*args, **kwargs)
+
+    return decorated_function
 
 
 # --- DATABASE CONNECTION UTILITIES ---
@@ -69,7 +106,7 @@ def get_db_connection():
             password=app.config["DB_PASSWORD"],
             port=app.config["DB_PORT"],
         )
-        DB_CONN.set_session(autocommit=False)  # Critical for safe transactions
+        DB_CONN.set_session(autocommit=False)
         print("✅ Database connection established successfully.")
         return DB_CONN
 
@@ -79,27 +116,29 @@ def get_db_connection():
         return None
 
 
-def get_current_user_id():
-    """Retrieves the user ID from the session or returns None."""
-    # Uses Flask's client-side session cookie for user identification
-    return session.get("user_id")
-
-
-# --- HOOKS (Middleware) ---
+# ======================================================================
+# --- FLASK HOOKS (Middleware) ---
+# ======================================================================
 
 
 @app.before_request
 def before_request():
-    """Ensure database connection is available and inject it into request context."""
+    """
+    Executed before every request. Ensures a database connection is established
+    and accessible via g.db. Returns a 503 error if the DB is unavailable.
+    """
     g.db = get_db_connection()
+    # Allow the root path ('/') for health check to run even if DB is down
     if g.db is None and request.path != "/":
-        # For non-health check routes, fail fast if DB is down
         return jsonify({"error": "Database service unavailable."}), 503
 
 
 @app.after_request
 def after_request(response):
-    """Commits database changes on success or ensures rollback is ready."""
+    """
+    Executed after every request. Commits the transaction if the response was
+    successful (status code < 400).
+    """
     if hasattr(g, "db") and g.db:
         if response.status_code < 400:
             # Commit changes only if the request was successful
@@ -107,9 +146,12 @@ def after_request(response):
     return response
 
 
-@app.teardown_appcontext  # <-- ADDED: Explicitly handles connection closing
+@app.teardown_appcontext
 def close_db_connection(exception):
-    """Closes the database connection at the end of the request context."""
+    """
+    Executed after the request context is torn down. Closes the global
+    database connection gracefully.
+    """
     global DB_CONN
     if DB_CONN is not None and DB_CONN.closed == 0:
         try:
@@ -119,11 +161,14 @@ def close_db_connection(exception):
             print(f"Error closing DB connection in teardown: {e}")
 
 
-# --- AUTHENTICATION ROUTES (Retained for completeness) ---
+# ======================================================================
+# --- AUTHENTICATION ROUTES (Public) ---
+# ======================================================================
 
 
 @app.route("/api/auth/signup", methods=["POST"])
 def signup():
+    """Handles new user registration and logs them in immediately."""
     data = request.get_json()
     email = data.get("email")
     password = data.get("password")
@@ -170,6 +215,7 @@ def signup():
 
 @app.route("/api/auth/login", methods=["POST"])
 def login():
+    """Authenticates a user and sets the session cookie."""
     data = request.get_json()
     email = data.get("email")
     password = data.get("password")
@@ -208,16 +254,18 @@ def login():
 
 
 @app.route("/api/auth/logout", methods=["POST"])
+# No @login_required here, as the user might try to logout even if the session is invalid
 def logout():
+    """Clears the user session cookie to log the user out."""
     session.pop("user_id", None)
     return jsonify({"message": "Successfully logged out."}), 200
 
 
 @app.route("/api/auth/me", methods=["GET"])
+@login_required  # <-- ADDED DECORATOR
 def me():
-    user_id = get_current_user_id()
-    if not user_id:
-        return jsonify({"message": "Not authenticated."}), 401
+    """Retrieves the current authenticated user's details."""
+    user_id = g.user_id  # User ID is available from the decorator
 
     conn = g.db
     cur = conn.cursor()
@@ -239,6 +287,7 @@ def me():
                 200,
             )
         else:
+            # Should not happen for a valid session ID, but clean up just in case
             session.pop("user_id", None)
             return jsonify({"message": "User not found."}), 404
 
@@ -249,36 +298,35 @@ def me():
         cur.close()
 
 
-# --- AOI ROUTES ---
+# ======================================================================
+# --- AOI ROUTES (Protected) ---
+# ======================================================================
 
 
 @app.route("/api/aois", methods=["POST"])
+@login_required  # <-- ADDED DECORATOR
 def create_aoi_and_snapshot():
-    # 1. Authentication Check
-    user_id = get_current_user_id()
-    if not user_id:
-        return jsonify({"error": "Authentication required."}), 401
-
+    """
+    Creates a new Area of Interest (AOI) and runs the initial road feature
+    detection model, ingesting the first road snapshot. This is a synchronous,
+    long-running process.
+    """
+    user_id = g.user_id  # User ID is available from the decorator
     data = request.get_json()
     name = data.get("name")
-    image_name = data.get("image_name")  # e.g., 'test_image_1.tif'
-    frequency = data.get("frequency", "Manual")  # Default to manual if not provided
+    image_name = data.get("image_name")
+    frequency = data.get("frequency", "Manual")
 
-    # 3. Validation
     if not all([name, image_name]):
         return jsonify({"error": "Missing required fields (name, image_name)."}), 400
 
     conn = g.db
     cur = conn.cursor()
     aoi_id = None
-    source_file_path = None  # Define here for cleanup in the 'except' block
+    source_file_path = None
 
-    # ----------------------------------------------------
-    # START SYNCHRONOUS, LONG-RUNNING PROCESS (Transaction Begins)
-    # WARNING: THIS IS BLOCKING. Consider Celery/RQ for production.
-    # ----------------------------------------------------
     try:
-        # 4. Insert AOI Row (The Parent Record)
+        # 1. Insert AOI Row (The Parent Record)
         cur.execute(
             """
             INSERT INTO aois (user_id, name, image_name, frequency)
@@ -288,29 +336,23 @@ def create_aoi_and_snapshot():
         )
         aoi_id = cur.fetchone()[0]
 
-        # 5. RUN MODEL PROCESSOR (BLOCKED: Model Inference + BBOX Calculation)
+        # 2. RUN MODEL PROCESSOR (Model Inference + BBOX Calculation)
         full_tiff_path = os.path.join(TIFF_BASE_DIR, image_name)
-
         print(
             f"[PROCESS] Starting model processing for AOI {aoi_id} on {image_name}..."
         )
 
-        # get_road_geojson returns (geojson_data_dict, bbox_wkt_string)
-        # The script handles reading the TIFF, running the model, and calculating the BBOX
         geojson_data, bbox_wkt = get_road_geojson(full_tiff_path)
 
         if not bbox_wkt:
-            # Check if processing failed to return any geometry
             raise ValueError(
                 "Model processing failed to detect road features or calculate BBOX."
             )
 
         print(f"[PROCESS] Model complete. Calculated BBOX: {bbox_wkt}")
 
-        # --- Temporary File Handling for GeoJSON ---
-        # Save the GeoJSON output to disk for the road_snapshots source_file record.
+        # 3. Save the GeoJSON output to disk
         os.makedirs(STORAGE_DIR, exist_ok=True)
-
         timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
         geojson_filename = f"aoi_{aoi_id}_snap_{timestamp}.geojson"
         source_file_path = os.path.join(STORAGE_DIR, geojson_filename)
@@ -318,10 +360,10 @@ def create_aoi_and_snapshot():
         with open(source_file_path, "w") as f:
             json.dump(geojson_data, f)
 
-        # 6. Create Snapshot Row (Get the crucial 'snapshot_id')
+        # 4. Create Snapshot Row
         cur.execute(
             """
-            INSERT INTO road_snapshots (aoi_id, capture_date, source_file) 
+            INSERT INTO road_snapshots (aoi_id, capture_date, source_file)
             VALUES (%s, now(), %s) RETURNING id;
             """,
             (aoi_id, source_file_path),
@@ -329,21 +371,15 @@ def create_aoi_and_snapshot():
         snapshot_id = cur.fetchone()[0]
         print(f"[PROCESS] Created road snapshot {snapshot_id}.")
 
-        # 7. RUN MODIFIED INGEST SCRIPT (Populate Features)
-        # This function performs feature insertion into 'road_features' using the active connection.
+        # 5. RUN INGEST SCRIPT (Populate Features)
         ingest_features_from_geojson(conn, source_file_path, snapshot_id)
         print(f"[PROCESS] Ingestion complete for snapshot {snapshot_id}.")
 
-        # 8. Update AOI with BBOX (Finalizes the AOI boundary)
+        # 6. Update AOI with BBOX (Finalizes the AOI boundary)
         cur.execute(
             "UPDATE aois SET bbox = ST_SetSRID(ST_GeomFromEWKT(%s), 4326) WHERE id = %s;",
             (bbox_wkt, aoi_id),
         )
-        # ----------------------------------------------------
-        # END SYNCHRONOUS PROCESS
-        # ----------------------------------------------------
-
-        # Commit is handled by @app.after_request on successful return.
 
         return (
             jsonify(
@@ -351,7 +387,6 @@ def create_aoi_and_snapshot():
                     "message": "AOI created, processed, and ingested successfully.",
                     "aoi_id": aoi_id,
                     "snapshot_id": snapshot_id,
-                    "processing_time": "Synchronous (Expected long-running time)",
                 }
             ),
             201,
@@ -361,7 +396,7 @@ def create_aoi_and_snapshot():
         conn.rollback()
         return jsonify({"error": str(e)}), 400
     except Exception as e:
-        conn.rollback()  # CRITICAL: Rollback everything if any step failed
+        conn.rollback()  # Rollback everything if any step failed
         print(f"AOI processing error: {e}")
 
         # Attempt to clean up the temporary GeoJSON file on failure
@@ -379,19 +414,16 @@ def create_aoi_and_snapshot():
 
 
 @app.route("/api/aois", methods=["GET"])
+@login_required  # <-- ADDED DECORATOR
 def get_all_aois():
-    """
-    Retrieves a list of all AOIs for the authenticated user, including the BBOX as text.
-    """
-    user_id = get_current_user_id()
-    if not user_id:
-        return jsonify({"error": "Authentication required."}), 401
+    """Retrieves a list of all AOIs created by the authenticated user."""
+    user_id = g.user_id  # User ID is available from the decorator
 
     conn = g.db
     cur = conn.cursor()
 
     try:
-        # We use ST_AsText(bbox) to return the geometry as a human-readable WKT string
+        # ST_AsText(bbox) converts the PostGIS geometry back to a WKT string
         cur.execute(
             """
             SELECT id, name, image_name, frequency, created_at, ST_AsText(bbox)
@@ -410,7 +442,7 @@ def get_all_aois():
                 "image_name": row[2],
                 "frequency": row[3],
                 "created_at": row[4].isoformat(),
-                "bbox_wkt": row[5],  # WKT string for visualization context
+                "bbox_wkt": row[5],
             }
             for row in aois_data
         ]
@@ -425,20 +457,19 @@ def get_all_aois():
 
 
 @app.route("/api/aois/<int:aoi_id>/latest_features", methods=["GET"])
+@login_required  # <-- ADDED DECORATOR
 def get_latest_aoi_features(aoi_id):
     """
     Retrieves the road features (geometry) for the latest snapshot of a given AOI
     and returns it directly as a GeoJSON FeatureCollection.
     """
-    user_id = get_current_user_id()
-    if not user_id:
-        return jsonify({"error": "Authentication required."}), 401
+    user_id = g.user_id  # User ID is available from the decorator
 
     conn = g.db
     cur = conn.cursor()
 
     try:
-        # Step 1: Find the ID of the latest road_snapshot for this AOI
+        # 1. Find the ID of the latest road_snapshot for this AOI
         cur.execute(
             """
             SELECT rs.id
@@ -457,8 +488,7 @@ def get_latest_aoi_features(aoi_id):
 
         latest_snapshot_id = snapshot_id_record[0]
 
-        # Step 2: Use PostGIS to aggregate all features from that snapshot into a single GeoJSON object
-        # The query generates a GeoJSON feature for every row and aggregates them into a FeatureCollection.
+        # 2. Use PostGIS to aggregate all features from that snapshot into a single GeoJSON object
         cur.execute(
             """
             SELECT json_build_object(
@@ -472,8 +502,7 @@ def get_latest_aoi_features(aoi_id):
         )
 
         geojson_result = cur.fetchone()[0]
-
-        # The result is already a perfectly formatted GeoJSON dictionary (not a string)
+        # The result is already a perfectly formatted GeoJSON dictionary
         return jsonify(geojson_result), 200
 
     except Exception as e:
@@ -484,13 +513,10 @@ def get_latest_aoi_features(aoi_id):
 
 
 @app.route("/api/aois/<int:aoi_id>", methods=["PUT"])
+@login_required  # <-- ADDED DECORATOR
 def update_aoi_metadata(aoi_id):
-    """
-    Updates the name and frequency of a specific AOI.
-    """
-    user_id = get_current_user_id()
-    if not user_id:
-        return jsonify({"error": "Authentication required."}), 401
+    """Updates the name and frequency of a specific AOI."""
+    user_id = g.user_id  # User ID is available from the decorator
 
     data = request.get_json()
     name = data.get("name")
@@ -535,27 +561,26 @@ def update_aoi_metadata(aoi_id):
 
 
 @app.route("/api/aois/<int:aoi_id>", methods=["DELETE"])
+@login_required  # <-- ADDED DECORATOR
 def delete_aoi(aoi_id):
     """
-    Deletes the AOI and all associated road snapshots and features via cascade delete,
-    and removes the associated local GeoJSON files from the storage directory.
+    Deletes the AOI, all associated database records (via CASCADE), and
+    the corresponding local GeoJSON files from storage.
     """
-    user_id = get_current_user_id()
-    if not user_id:
-        return jsonify({"error": "Authentication required."}), 401
+    user_id = g.user_id  # User ID is available from the decorator
 
     conn = g.db
     cur = conn.cursor()
     files_to_delete = []
 
     try:
-        # 1. Get file paths BEFORE deleting the AOI (which cascades deletes DB records)
+        # 1. Get file paths BEFORE deleting the AOI
         cur.execute(
             "SELECT source_file FROM road_snapshots WHERE aoi_id = %s;", (aoi_id,)
         )
         files_to_delete = [row[0] for row in cur.fetchall()]
 
-        # 2. Delete the AOI (ON DELETE CASCADE handles road_snapshots and road_features cleanup)
+        # 2. Delete the AOI
         cur.execute(
             """
             DELETE FROM aois
@@ -598,15 +623,13 @@ def delete_aoi(aoi_id):
 
 
 @app.route("/api/aois/<int:aoi_id>/process_new_snapshot", methods=["POST"])
+@login_required  # <-- ADDED DECORATOR
 def process_new_snapshot(aoi_id):
     """
-    Simulates a scheduled run by fetching the AOI's image, processing it,
-    and ingesting a new snapshot into the database.
-    This route can be called by an internal scheduler (Celery, Cron, etc.).
+    Simulates a scheduled run by reprocessing the AOI's source image,
+    ingesting a *new* snapshot into the database, but does NOT run change detection.
     """
-    user_id = get_current_user_id()
-    if not user_id:
-        return jsonify({"error": "Authentication required."}), 401
+    user_id = g.user_id  # User ID is available from the decorator
 
     conn = g.db
     cur = conn.cursor()
@@ -629,9 +652,7 @@ def process_new_snapshot(aoi_id):
         print(f"[SCHEDULED] Starting re-processing for AOI {aoi_id} on {image_name}...")
 
         # 2. RUN MODEL PROCESSOR (Reuse logic from AOI creation)
-        geojson_data, _ = get_road_geojson(
-            full_tiff_path
-        )  # BBOX doesn't change, so ignore it
+        geojson_data, _ = get_road_geojson(full_tiff_path)
 
         # 3. Save the new GeoJSON Snapshot file
         os.makedirs(STORAGE_DIR, exist_ok=True)
@@ -645,7 +666,7 @@ def process_new_snapshot(aoi_id):
         # 4. Create new Snapshot Row
         cur.execute(
             """
-            INSERT INTO road_snapshots (aoi_id, capture_date, source_file) 
+            INSERT INTO road_snapshots (aoi_id, capture_date, source_file)
             VALUES (%s, now(), %s) RETURNING id;
             """,
             (aoi_id, source_file_path),
@@ -656,8 +677,6 @@ def process_new_snapshot(aoi_id):
         # 5. RUN INGEST SCRIPT (Populate features for the new snapshot)
         ingest_features_from_geojson(conn, source_file_path, snapshot_id)
         print(f"[SCHEDULED] Ingestion complete for snapshot {snapshot_id}.")
-
-        # Note: AOI BBOX is NOT updated as it is assumed to be static.
 
         return (
             jsonify(
@@ -675,7 +694,7 @@ def process_new_snapshot(aoi_id):
         print(f"Scheduled processing error for AOI {aoi_id}: {e}")
 
         if source_file_path and os.path.exists(source_file_path):
-            os.remove(source_file_path)  # Cleanup file if failure occurred after saving
+            os.remove(source_file_path)
 
         return (
             jsonify(
@@ -690,10 +709,12 @@ def process_new_snapshot(aoi_id):
 
 
 @app.route("/api/demo/change_detection", methods=["POST"])
+# This is a public demo route for stateless operations, so it is NOT protected
 def demo_change_detection():
     """
-    Stateless route: Accepts two GeoJSON files, runs change detection locally,
-    returns the changes, and cleans up temporary files immediately.
+    Stateless route: Accepts two GeoJSON files (old and new), runs change
+    detection locally using the database, returns the change GeoJSON, and cleans
+    up temporary files immediately.
     """
     if "file_old" not in request.files or "file_new" not in request.files:
         return (
@@ -732,8 +753,8 @@ def demo_change_detection():
         )
 
         # 2. RUN CHANGE DETECTION SCRIPT
-        # The script accesses the database connection (g.db) for PostGIS operations
-        change_geojson = detect_changes_stateless(path_old, path_new)
+        # The script uses the active database connection (g.db) for PostGIS operations
+        change_geojson = detect_changes_stateless(path_old, path_new)  # Passed g.db
 
         print("[DEMO] Stateless detection complete.")
 
@@ -762,14 +783,13 @@ def demo_change_detection():
 
 
 @app.route("/api/aois/<int:aoi_id>/detect_changes", methods=["GET"])
+@login_required  # <-- ADDED DECORATOR
 def detect_aoi_changes(aoi_id):
     """
-    Retrieves the two latest road snapshots for an AOI and runs change detection
-    between the road_features linked to those two snapshots.
+    Retrieves the two latest road snapshots for an AOI and runs database-based
+    change detection between them, returning the GeoJSON of the differences.
     """
-    user_id = get_current_user_id()
-    if not user_id:
-        return jsonify({"error": "Authentication required."}), 401
+    user_id = g.user_id  # User ID is available from the decorator
 
     conn = g.db
     cur = conn.cursor()
@@ -778,7 +798,7 @@ def detect_aoi_changes(aoi_id):
         # 1. Get the two latest snapshot IDs for this AOI
         cur.execute(
             """
-            SELECT rs.id 
+            SELECT rs.id
             FROM road_snapshots rs
             JOIN aois a ON rs.aoi_id = a.id
             WHERE a.id = %s AND a.user_id = %s
@@ -805,10 +825,9 @@ def detect_aoi_changes(aoi_id):
 
         # 2. RUN DATABASE-BASED CHANGE DETECTION SCRIPT
         print(
-            f"[DB CHANGE] Preparing to detect changes between Snapshots {snapshot_old_id} (Old) and {snapshot_new_id} (New)..."
+            f"[DB CHANGE] Detecting changes between Snapshots {snapshot_old_id} (Old) and {snapshot_new_id} (New)..."
         )
 
-        # We now use the implemented function
         change_geojson = detect_changes_database(conn, snapshot_old_id, snapshot_new_id)
 
         print(f"[DB CHANGE] Change detection successful.")
@@ -828,16 +847,19 @@ def detect_aoi_changes(aoi_id):
         cur.close()
 
 
-# --- HEALTH CHECK ROUTE ---
+# ======================================================================
+# --- HEALTH CHECK ROUTE (Public) ---
+# ======================================================================
 
 
 def test_db_connection_status():
+    """Helper function to test the database connection and a simple query."""
     conn = get_db_connection()
     if conn:
         try:
             with conn.cursor() as cur:
                 cur.execute("SELECT 1;")
-                return True, "Connected to ares_mvp."
+                return True, "Connected to ares_mvp and query successful."
         except Exception as e:
             print(f"Database query failed: {e}")
             return False, f"Database connection failed during query test: {e}"
@@ -847,6 +869,7 @@ def test_db_connection_status():
 
 @app.route("/", methods=["GET"])
 def health_check():
+    """Provides a status check for the API service and database connection."""
     db_status, db_message = test_db_connection_status()
 
     response_data = {
@@ -863,7 +886,10 @@ def health_check():
         return jsonify(response_data), 503
 
 
+# ======================================================================
 # --- MAIN EXECUTION ---
+# ======================================================================
+
 if __name__ == "__main__":
     # Attempt connection when the app starts
     get_db_connection()
