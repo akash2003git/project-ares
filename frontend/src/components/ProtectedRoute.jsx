@@ -3,16 +3,12 @@ import { useAuth } from "../context/AuthContext";
 
 const ProtectedRoute = () => {
   const { user, isLoading } = useAuth();
-
   if (isLoading) {
-    // Don’t render anything that would trigger redirect yet
     return <div>Loading user session...</div>;
   }
-
   if (!user) {
     return <Navigate to="/login" replace />;
   }
-
   return <Outlet />;
 };
 

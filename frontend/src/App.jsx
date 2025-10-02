@@ -4,6 +4,7 @@ import ChangeDetectionDemo from "./pages/ChangeDetectionDemo";
 import NotFound from "./pages/NotFound";
 import LoginPage from "./pages/LoginPage";
 import SignupPage from "./pages/SignupPage";
+import Navbar from "./components/Navbar";
 
 import ProtectedRoute from "./components/ProtectedRoute";
 import { useAuth } from "./context/AuthContext";
@@ -26,29 +27,7 @@ export default function App() {
   return (
     <Router>
       <div className="flex flex-col min-h-screen">
-        {/* Navbar */}
-        <header className="bg-white shadow p-4 flex justify-between">
-          <Link to="/" className="text-xl font-bold text-indigo-600">
-            ARES
-          </Link>
-          <nav className="space-x-4">
-            <Link to="/" className="text-gray-600 hover:text-indigo-600">
-              Home
-            </Link>
-            <Link
-              to="/change-detection-demo"
-              className="text-gray-600 hover:text-indigo-600"
-            >
-              Change Detection Demo
-            </Link>
-            <Link
-              to="/dashboard"
-              className="text-gray-600 hover:text-indigo-600"
-            >
-              Dashboard
-            </Link>
-          </nav>
-        </header>
+        <Navbar />
 
         {/* Routes */}
         <main className="flex-1">
@@ -57,13 +36,13 @@ export default function App() {
             <Route path="/" element={<Home />} />
             <Route path="/login" element={<LoginPage />} />
             <Route path="/signup" element={<SignupPage />} />
+            <Route
+              path="/change-detection-demo"
+              element={<ChangeDetectionDemo />}
+            />
 
             {/* Protected Routes */}
             <Route element={<ProtectedRoute />}>
-              <Route
-                path="/change-detection-demo"
-                element={<ChangeDetectionDemo />}
-              />
               <Route path="/dashboard" element={<Dashboard />} />
             </Route>
 
