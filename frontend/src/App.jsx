@@ -7,6 +7,7 @@ import SignupPage from "./pages/SignupPage";
 import Navbar from "./components/Navbar";
 import Dashboard from "./pages/Dashboard";
 import CreateAoi from "./pages/CreateAoi";
+import AoiDetail from "./pages/AoiDetail";
 import ProtectedRoute from "./components/ProtectedRoute";
 
 export default function App() {
@@ -31,6 +32,7 @@ export default function App() {
             <Route element={<ProtectedRoute />}>
               <Route path="/dashboard" element={<Dashboard />} />
               <Route path="/create-aoi" element={<CreateAoi />} />
+              <Route path="/aois/:aoiId" element={<AoiDetail />} />
             </Route>
 
             {/* Fallback */}

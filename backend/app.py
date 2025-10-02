@@ -92,27 +92,32 @@ def login_required(f):
 
 def get_db_connection():
     """Establishes and returns a new psycopg2 database connection."""
-    global DB_CONN
+    # NO global DB_CONN reference here. We only use g.db for the current request.
 
-    # Reuse existing, open connection if available
-    if DB_CONN is not None and DB_CONN.closed == 0:
-        return DB_CONN
+    # Check if a connection already exists in the request context (g object)
+    if "db" in g and g.db is not None and g.db.closed == 0:
+        return g.db  # Return the existing connection for the current request
 
     try:
-        DB_CONN = psycopg2.connect(
+        # 1. Establish the new connection
+        conn = psycopg2.connect(  # <-- Use a local variable 'conn'
             host=app.config["DB_HOST"],
             database=app.config["DB_NAME"],
             user=app.config["DB_USER"],
             password=app.config["DB_PASSWORD"],
             port=app.config["DB_PORT"],
         )
-        DB_CONN.set_session(autocommit=False)
+        conn.set_session(autocommit=False)
         print("✅ Database connection established successfully.")
-        return DB_CONN
+
+        # 2. Store it in g.db so it can be reused later in THIS request
+        g.db = conn
+        return conn
 
     except psycopg2.OperationalError as e:
         print(f"❌ Database connection failed: {e}")
-        DB_CONN = None
+        # Ensure g.db is None if connection fails
+        g.db = None
         return None
 
 
@@ -127,36 +132,48 @@ def before_request():
     Executed before every request. Ensures a database connection is established
     and accessible via g.db. Returns a 503 error if the DB is unavailable.
     """
-    g.db = get_db_connection()
-    # Allow the root path ('/') for health check to run even if DB is down
-    if g.db is None and request.path != "/":
+    # This call now establishes the connection AND stores it in g.db
+    # It also returns the connection, but we just want to ensure it runs.
+    db_conn = get_db_connection()
+
+    # Check g.db for the availability status
+    if db_conn is None and request.path != "/":
         return jsonify({"error": "Database service unavailable."}), 503
 
 
+# REMOVE the 'if hasattr(g, "db") and g.db:' check in after_request,
+# as before_request ensures g.db exists unless a 503 was returned.
 @app.after_request
 def after_request(response):
     """
     Executed after every request. Commits the transaction if the response was
     successful (status code < 400).
     """
-    if hasattr(g, "db") and g.db:
+    # Check if a connection was successfully opened and is not closed
+    if "db" in g and g.db is not None and g.db.closed == 0:
         if response.status_code < 400:
             # Commit changes only if the request was successful
             g.db.commit()
+        # If the request failed (>= 400), the default behavior is to rollback
+        # (or rely on the connection being closed in teardown).
+        # We can explicitly rollback for safety:
+        else:
+            g.db.rollback()
+
     return response
 
 
 @app.teardown_appcontext
 def close_db_connection(exception):
     """
-    Executed after the request context is torn down. Closes the global
-    database connection gracefully.
+    Executed after the request context is torn down. Closes the connection
+    stored in g.db gracefully, if it exists.
     """
-    global DB_CONN
-    if DB_CONN is not None and DB_CONN.closed == 0:
+    # NO global DB_CONN reference here.
+    if "db" in g and g.db is not None and g.db.closed == 0:
         try:
-            DB_CONN.close()
-            DB_CONN = None
+            g.db.close()
+            # We don't need to set DB_CONN = None anymore
         except Exception as e:
             print(f"Error closing DB connection in teardown: {e}")
 
@@ -891,7 +908,8 @@ def health_check():
 # ======================================================================
 
 if __name__ == "__main__":
-    # Attempt connection when the app starts
-    get_db_connection()
+    # Remove the startup connection attempt since it doesn't serve a request context:
+    # get_db_connection()
+    # The health check will now manage the connection test.
     print("\n--- Project Ares Backend Ready ---")
     print(f"To run the application, use: flask run --debug\n")
