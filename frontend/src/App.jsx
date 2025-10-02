@@ -5,23 +5,9 @@ import NotFound from "./pages/NotFound";
 import LoginPage from "./pages/LoginPage";
 import SignupPage from "./pages/SignupPage";
 import Navbar from "./components/Navbar";
-
+import Dashboard from "./pages/Dashboard";
+import CreateAoi from "./pages/CreateAoi";
 import ProtectedRoute from "./components/ProtectedRoute";
-import { useAuth } from "./context/AuthContext";
-
-// Simple Dashboard component
-function Dashboard() {
-  const { user } = useAuth();
-
-  return (
-    <div className="p-6">
-      <h1 className="text-2xl font-bold text-gray-800">Dashboard</h1>
-      <p className="mt-4 text-gray-600">
-        Welcome, <span className="font-semibold">{user?.email}</span>
-      </p>
-    </div>
-  );
-}
 
 export default function App() {
   return (
@@ -44,6 +30,7 @@ export default function App() {
             {/* Protected Routes */}
             <Route element={<ProtectedRoute />}>
               <Route path="/dashboard" element={<Dashboard />} />
+              <Route path="/create-aoi" element={<CreateAoi />} />
             </Route>
 
             {/* Fallback */}
