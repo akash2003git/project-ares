@@ -16,7 +16,6 @@ from config import Config
 
 # Imports for geospatial logic (requires scripts folder to be on path or correctly imported)
 try:
-    # These imports rely on the functions being updated to match the expected signature
     from scripts.model_processor import get_road_geojson
     from scripts.ingest_data import ingest_features_from_geojson
     from scripts.change_detection import (
@@ -30,9 +29,8 @@ except ImportError as e:
     sys.exit(1)
 
 
-# ======================================================================
 # --- INITIALIZATION & CONFIGURATION ---
-# ======================================================================
+
 
 app = Flask(__name__)
 app.config.from_object(Config)
@@ -56,9 +54,8 @@ STORAGE_DIR = os.path.join(BASE_DIR, "storage")
 DEMO_TEMP_DIR = os.path.join(STORAGE_DIR, "demo_temp")
 app.config["STORAGE_DIR"] = STORAGE_DIR
 
-# ======================================================================
+
 # --- DECORATORS & UTILITIES ---
-# ======================================================================
 
 
 def get_current_user_id():
@@ -92,15 +89,14 @@ def login_required(f):
 
 def get_db_connection():
     """Establishes and returns a new psycopg2 database connection."""
-    # NO global DB_CONN reference here. We only use g.db for the current request.
 
     # Check if a connection already exists in the request context (g object)
     if "db" in g and g.db is not None and g.db.closed == 0:
         return g.db  # Return the existing connection for the current request
 
     try:
-        # 1. Establish the new connection
-        conn = psycopg2.connect(  # <-- Use a local variable 'conn'
+        # Establish the new connection
+        conn = psycopg2.connect(
             host=app.config["DB_HOST"],
             database=app.config["DB_NAME"],
             user=app.config["DB_USER"],
@@ -110,7 +106,7 @@ def get_db_connection():
         conn.set_session(autocommit=False)
         print("✅ Database connection established successfully.")
 
-        # 2. Store it in g.db so it can be reused later in THIS request
+        # Store it in g.db so it can be reused later in THIS request
         g.db = conn
         return conn
 
@@ -121,9 +117,7 @@ def get_db_connection():
         return None
 
 
-# ======================================================================
 # --- FLASK HOOKS (Middleware) ---
-# ======================================================================
 
 
 @app.before_request
@@ -132,8 +126,6 @@ def before_request():
     Executed before every request. Ensures a database connection is established
     and accessible via g.db. Returns a 503 error if the DB is unavailable.
     """
-    # This call now establishes the connection AND stores it in g.db
-    # It also returns the connection, but we just want to ensure it runs.
     db_conn = get_db_connection()
 
     # Check g.db for the availability status
@@ -141,8 +133,6 @@ def before_request():
         return jsonify({"error": "Database service unavailable."}), 503
 
 
-# REMOVE the 'if hasattr(g, "db") and g.db:' check in after_request,
-# as before_request ensures g.db exists unless a 503 was returned.
 @app.after_request
 def after_request(response):
     """
@@ -152,11 +142,7 @@ def after_request(response):
     # Check if a connection was successfully opened and is not closed
     if "db" in g and g.db is not None and g.db.closed == 0:
         if response.status_code < 400:
-            # Commit changes only if the request was successful
             g.db.commit()
-        # If the request failed (>= 400), the default behavior is to rollback
-        # (or rely on the connection being closed in teardown).
-        # We can explicitly rollback for safety:
         else:
             g.db.rollback()
 
@@ -169,18 +155,14 @@ def close_db_connection(exception):
     Executed after the request context is torn down. Closes the connection
     stored in g.db gracefully, if it exists.
     """
-    # NO global DB_CONN reference here.
     if "db" in g and g.db is not None and g.db.closed == 0:
         try:
             g.db.close()
-            # We don't need to set DB_CONN = None anymore
         except Exception as e:
             print(f"Error closing DB connection in teardown: {e}")
 
 
-# ======================================================================
 # --- AUTHENTICATION ROUTES (Public) ---
-# ======================================================================
 
 
 @app.route("/api/auth/signup", methods=["POST"])
@@ -271,7 +253,6 @@ def login():
 
 
 @app.route("/api/auth/logout", methods=["POST"])
-# No @login_required here, as the user might try to logout even if the session is invalid
 def logout():
     """Clears the user session cookie to log the user out."""
     session.pop("user_id", None)
@@ -279,10 +260,10 @@ def logout():
 
 
 @app.route("/api/auth/me", methods=["GET"])
-@login_required  # <-- ADDED DECORATOR
+@login_required
 def me():
     """Retrieves the current authenticated user's details."""
-    user_id = g.user_id  # User ID is available from the decorator
+    user_id = g.user_id
 
     conn = g.db
     cur = conn.cursor()
@@ -304,7 +285,6 @@ def me():
                 200,
             )
         else:
-            # Should not happen for a valid session ID, but clean up just in case
             session.pop("user_id", None)
             return jsonify({"message": "User not found."}), 404
 
@@ -315,20 +295,18 @@ def me():
         cur.close()
 
 
-# ======================================================================
 # --- AOI ROUTES (Protected) ---
-# ======================================================================
 
 
 @app.route("/api/aois", methods=["POST"])
-@login_required  # <-- ADDED DECORATOR
+@login_required
 def create_aoi_and_snapshot():
     """
     Creates a new Area of Interest (AOI) and runs the initial road feature
     detection model, ingesting the first road snapshot. This is a synchronous,
     long-running process.
     """
-    user_id = g.user_id  # User ID is available from the decorator
+    user_id = g.user_id
     data = request.get_json()
     name = data.get("name")
     image_name = data.get("image_name")
@@ -343,7 +321,7 @@ def create_aoi_and_snapshot():
     source_file_path = None
 
     try:
-        # 1. Insert AOI Row (The Parent Record)
+        # Insert AOI Row (The Parent Record)
         cur.execute(
             """
             INSERT INTO aois (user_id, name, image_name, frequency)
@@ -353,7 +331,7 @@ def create_aoi_and_snapshot():
         )
         aoi_id = cur.fetchone()[0]
 
-        # 2. RUN MODEL PROCESSOR (Model Inference + BBOX Calculation)
+        # RUN MODEL PROCESSOR (Model Inference + BBOX Calculation)
         full_tiff_path = os.path.join(TIFF_BASE_DIR, image_name)
         print(
             f"[PROCESS] Starting model processing for AOI {aoi_id} on {image_name}..."
@@ -368,7 +346,7 @@ def create_aoi_and_snapshot():
 
         print(f"[PROCESS] Model complete. Calculated BBOX: {bbox_wkt}")
 
-        # 3. Save the GeoJSON output to disk
+        # Save the GeoJSON output to disk
         os.makedirs(STORAGE_DIR, exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
         geojson_filename = f"aoi_{aoi_id}_snap_{timestamp}.geojson"
@@ -377,7 +355,7 @@ def create_aoi_and_snapshot():
         with open(source_file_path, "w") as f:
             json.dump(geojson_data, f)
 
-        # 4. Create Snapshot Row
+        # Create Snapshot Row
         cur.execute(
             """
             INSERT INTO road_snapshots (aoi_id, capture_date, source_file)
@@ -388,11 +366,11 @@ def create_aoi_and_snapshot():
         snapshot_id = cur.fetchone()[0]
         print(f"[PROCESS] Created road snapshot {snapshot_id}.")
 
-        # 5. RUN INGEST SCRIPT (Populate Features)
+        # RUN INGEST SCRIPT (Populate Features)
         ingest_features_from_geojson(conn, source_file_path, snapshot_id)
         print(f"[PROCESS] Ingestion complete for snapshot {snapshot_id}.")
 
-        # 6. Update AOI with BBOX (Finalizes the AOI boundary)
+        # Update AOI with BBOX (Finalizes the AOI boundary)
         cur.execute(
             "UPDATE aois SET bbox = ST_SetSRID(ST_GeomFromEWKT(%s), 4326) WHERE id = %s;",
             (bbox_wkt, aoi_id),
@@ -431,10 +409,10 @@ def create_aoi_and_snapshot():
 
 
 @app.route("/api/aois", methods=["GET"])
-@login_required  # <-- ADDED DECORATOR
+@login_required
 def get_all_aois():
     """Retrieves a list of all AOIs created by the authenticated user."""
-    user_id = g.user_id  # User ID is available from the decorator
+    user_id = g.user_id
 
     conn = g.db
     cur = conn.cursor()
@@ -474,19 +452,19 @@ def get_all_aois():
 
 
 @app.route("/api/aois/<int:aoi_id>/latest_features", methods=["GET"])
-@login_required  # <-- ADDED DECORATOR
+@login_required
 def get_latest_aoi_features(aoi_id):
     """
     Retrieves the road features (geometry) for the latest snapshot of a given AOI
     and returns it directly as a GeoJSON FeatureCollection.
     """
-    user_id = g.user_id  # User ID is available from the decorator
+    user_id = g.user_id
 
     conn = g.db
     cur = conn.cursor()
 
     try:
-        # 1. Find the ID of the latest road_snapshot for this AOI
+        # Find the ID of the latest road_snapshot for this AOI
         cur.execute(
             """
             SELECT rs.id
@@ -505,7 +483,7 @@ def get_latest_aoi_features(aoi_id):
 
         latest_snapshot_id = snapshot_id_record[0]
 
-        # 2. Use PostGIS to aggregate all features from that snapshot into a single GeoJSON object
+        # Use PostGIS to aggregate all features from that snapshot into a single GeoJSON object
         cur.execute(
             """
             SELECT json_build_object(
@@ -519,7 +497,6 @@ def get_latest_aoi_features(aoi_id):
         )
 
         geojson_result = cur.fetchone()[0]
-        # The result is already a perfectly formatted GeoJSON dictionary
         return jsonify(geojson_result), 200
 
     except Exception as e:
@@ -530,10 +507,10 @@ def get_latest_aoi_features(aoi_id):
 
 
 @app.route("/api/aois/<int:aoi_id>", methods=["PUT"])
-@login_required  # <-- ADDED DECORATOR
+@login_required
 def update_aoi_metadata(aoi_id):
     """Updates the name and frequency of a specific AOI."""
-    user_id = g.user_id  # User ID is available from the decorator
+    user_id = g.user_id
 
     data = request.get_json()
     name = data.get("name")
@@ -578,26 +555,26 @@ def update_aoi_metadata(aoi_id):
 
 
 @app.route("/api/aois/<int:aoi_id>", methods=["DELETE"])
-@login_required  # <-- ADDED DECORATOR
+@login_required
 def delete_aoi(aoi_id):
     """
     Deletes the AOI, all associated database records (via CASCADE), and
     the corresponding local GeoJSON files from storage.
     """
-    user_id = g.user_id  # User ID is available from the decorator
+    user_id = g.user_id
 
     conn = g.db
     cur = conn.cursor()
     files_to_delete = []
 
     try:
-        # 1. Get file paths BEFORE deleting the AOI
+        # Get file paths BEFORE deleting the AOI
         cur.execute(
             "SELECT source_file FROM road_snapshots WHERE aoi_id = %s;", (aoi_id,)
         )
         files_to_delete = [row[0] for row in cur.fetchall()]
 
-        # 2. Delete the AOI
+        # Delete the AOI
         cur.execute(
             """
             DELETE FROM aois
@@ -610,7 +587,7 @@ def delete_aoi(aoi_id):
         if cur.rowcount == 0:
             return jsonify({"error": "AOI not found or unauthorized."}), 404
 
-        # 3. Clean up local files
+        # Clean up local files
         for file_path in files_to_delete:
             if os.path.exists(file_path):
                 os.remove(file_path)
@@ -634,26 +611,24 @@ def delete_aoi(aoi_id):
         cur.close()
 
 
-# ----------------------------------------------------------------------
 # --- NEW ROUTES FOR SCHEDULING AND CHANGE DETECTION ---
-# ----------------------------------------------------------------------
 
 
 @app.route("/api/aois/<int:aoi_id>/process_new_snapshot", methods=["POST"])
-@login_required  # <-- ADDED DECORATOR
+@login_required
 def process_new_snapshot(aoi_id):
     """
     Simulates a scheduled run by reprocessing the AOI's source image,
-    ingesting a *new* snapshot into the database, but does NOT run change detection.
+    ingesting a new snapshot into the database, but does NOT run change detection.
     """
-    user_id = g.user_id  # User ID is available from the decorator
+    user_id = g.user_id
 
     conn = g.db
     cur = conn.cursor()
     source_file_path = None
 
     try:
-        # 1. Fetch AOI metadata (image name)
+        # Fetch AOI metadata (image name)
         cur.execute(
             "SELECT image_name FROM aois WHERE id = %s AND user_id = %s;",
             (aoi_id, user_id),
@@ -668,10 +643,10 @@ def process_new_snapshot(aoi_id):
 
         print(f"[SCHEDULED] Starting re-processing for AOI {aoi_id} on {image_name}...")
 
-        # 2. RUN MODEL PROCESSOR (Reuse logic from AOI creation)
+        # RUN MODEL PROCESSOR (Reuse logic from AOI creation)
         geojson_data, _ = get_road_geojson(full_tiff_path)
 
-        # 3. Save the new GeoJSON Snapshot file
+        # Save the new GeoJSON Snapshot file
         os.makedirs(STORAGE_DIR, exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
         geojson_filename = f"aoi_{aoi_id}_snap_{timestamp}.geojson"
@@ -680,7 +655,7 @@ def process_new_snapshot(aoi_id):
         with open(source_file_path, "w") as f:
             json.dump(geojson_data, f)
 
-        # 4. Create new Snapshot Row
+        # Create new Snapshot Row
         cur.execute(
             """
             INSERT INTO road_snapshots (aoi_id, capture_date, source_file)
@@ -691,7 +666,7 @@ def process_new_snapshot(aoi_id):
         snapshot_id = cur.fetchone()[0]
         print(f"[SCHEDULED] Created new road snapshot {snapshot_id}.")
 
-        # 5. RUN INGEST SCRIPT (Populate features for the new snapshot)
+        # RUN INGEST SCRIPT (Populate features for the new snapshot)
         ingest_features_from_geojson(conn, source_file_path, snapshot_id)
         print(f"[SCHEDULED] Ingestion complete for snapshot {snapshot_id}.")
 
@@ -754,7 +729,7 @@ def demo_change_detection():
     temp_files = []
 
     try:
-        # 1. Save files temporarily
+        # Save files temporarily
         unique_id = uuid.uuid4().hex
 
         path_old = os.path.join(DEMO_TEMP_DIR, f"{unique_id}_old.geojson")
@@ -769,13 +744,13 @@ def demo_change_detection():
             f"[DEMO] Running stateless change detection between {path_old} and {path_new}..."
         )
 
-        # 2. RUN CHANGE DETECTION SCRIPT
+        # RUN CHANGE DETECTION SCRIPT
         # The script uses the active database connection (g.db) for PostGIS operations
         change_geojson = detect_changes_stateless(path_old, path_new)  # Passed g.db
 
         print("[DEMO] Stateless detection complete.")
 
-        # 3. Return result
+        # Return result
         return jsonify(change_geojson), 200
 
     except Exception as e:
@@ -788,31 +763,29 @@ def demo_change_detection():
             500,
         )
     finally:
-        # 4. Clean up temporary files regardless of success/failure
+        # Clean up temporary files regardless of success/failure
         for f in temp_files:
             if os.path.exists(f):
                 os.remove(f)
 
 
-# ----------------------------------------------------------------------
 # --- MAIN CHANGE DETECTION ROUTE ---
-# ----------------------------------------------------------------------
 
 
 @app.route("/api/aois/<int:aoi_id>/detect_changes", methods=["GET"])
-@login_required  # <-- ADDED DECORATOR
+@login_required
 def detect_aoi_changes(aoi_id):
     """
     Retrieves the two latest road snapshots for an AOI and runs database-based
     change detection between them, returning the GeoJSON of the differences.
     """
-    user_id = g.user_id  # User ID is available from the decorator
+    user_id = g.user_id
 
     conn = g.db
     cur = conn.cursor()
 
     try:
-        # 1. Get the two latest snapshot IDs for this AOI
+        # Get the two latest snapshot IDs for this AOI
         cur.execute(
             """
             SELECT rs.id
@@ -840,7 +813,7 @@ def detect_aoi_changes(aoi_id):
         snapshot_new_id = snapshots[0][0]
         snapshot_old_id = snapshots[1][0]
 
-        # 2. RUN DATABASE-BASED CHANGE DETECTION SCRIPT
+        # RUN DATABASE-BASED CHANGE DETECTION SCRIPT
         print(
             f"[DB CHANGE] Detecting changes between Snapshots {snapshot_old_id} (Old) and {snapshot_new_id} (New)..."
         )
@@ -864,9 +837,7 @@ def detect_aoi_changes(aoi_id):
         cur.close()
 
 
-# ======================================================================
 # --- HEALTH CHECK ROUTE (Public) ---
-# ======================================================================
 
 
 def test_db_connection_status():
@@ -903,13 +874,8 @@ def health_check():
         return jsonify(response_data), 503
 
 
-# ======================================================================
 # --- MAIN EXECUTION ---
-# ======================================================================
 
 if __name__ == "__main__":
-    # Remove the startup connection attempt since it doesn't serve a request context:
-    # get_db_connection()
-    # The health check will now manage the connection test.
     print("\n--- Project Ares Backend Ready ---")
     print(f"To run the application, use: flask run --debug\n")

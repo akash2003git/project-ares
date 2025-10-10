@@ -1,9 +1,8 @@
 import { useAuth } from "../context/AuthContext";
 import { useState, useEffect, useCallback } from "react";
 import { Link } from "react-router-dom";
-import apiClient from "../api/apiClient"; // Import your configured instance
+import apiClient from "../api/apiClient";
 
-// Helper function for a clean timestamp format
 const formatDate = (isoString) => {
   const date = new Date(isoString);
   return new Intl.DateTimeFormat("en-US", {
@@ -15,7 +14,6 @@ const formatDate = (isoString) => {
   }).format(date);
 };
 
-// Component to display a single AOI
 const AoiCard = ({ aoi }) => {
   return (
     <div className="bg-white p-6 rounded-lg shadow-md hover:shadow-lg transition-shadow duration-300 border border-gray-100">
@@ -74,7 +72,6 @@ export default function Dashboard() {
     setLoading(true);
     setError(null);
     try {
-      // Use the imported apiClient for the GET request to /api/aois
       const response = await apiClient.get("/api/aois");
       setAois(response.data);
     } catch (err) {
@@ -135,7 +132,7 @@ export default function Dashboard() {
           Your Areas of Interest (AOIs)
         </h1>
         <Link
-          to="/create-aoi" // Assuming you have a route for creating a new AOI
+          to="/create-aoi"
           className="px-4 py-2 bg-indigo-600 text-white font-medium rounded-lg shadow-md hover:bg-indigo-700 transition duration-150"
         >
           + Create New AOI
@@ -164,8 +161,8 @@ export default function Dashboard() {
             You haven't created any AOIs yet.
           </p>
           <p className="mt-2 text-gray-500">
-            Click the **"Create New AOI"** button to get started with road
-            feature monitoring.
+            Click the "Create New AOI" button to get started with road feature
+            monitoring.
           </p>
         </div>
       ) : (

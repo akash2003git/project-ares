@@ -62,8 +62,6 @@ def ingest_features_from_geojson(conn, geojson_path: str, snapshot_id: int):
 
     except Exception as e:
         print(f"Ingestion Failed: {e}")
-        # Re-raise the exception. The rollback will be handled by the @app.after_request
-        # logic or the main route's exception handler in app.py.
         raise
     finally:
         cur.close()

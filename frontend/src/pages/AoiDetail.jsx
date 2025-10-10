@@ -2,10 +2,9 @@ import { useState, useEffect, useCallback } from "react";
 import { useParams, Link, useNavigate } from "react-router-dom";
 import apiClient from "../api/apiClient";
 
-// Define the available frequency options (reused from CreateAoi)
 const FREQUENCY_OPTIONS = ["Manual", "Weekly", "Monthly", "Quarterly"];
 
-// Helper function for a clean timestamp format (reused from Dashboard)
+// Helper function for a clean timestamp format
 const formatDate = (isoString) => {
   const date = new Date(isoString);
   return new Intl.DateTimeFormat("en-US", {
@@ -21,29 +20,25 @@ export default function AoiDetail() {
   const { aoiId } = useParams();
   const navigate = useNavigate();
 
-  // State for data
   const [aoi, setAoi] = useState(null);
   const [featuresGeojson, setFeaturesGeojson] = useState(null);
 
-  // State for Update Form
   const [isEditing, setIsEditing] = useState(false);
   const [editName, setEditName] = useState("");
   const [editFrequency, setEditFrequency] = useState("");
 
-  // State for UI
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [successMessage, setSuccessMessage] = useState(null);
   const [isDeleting, setIsDeleting] = useState(false);
 
-  // --- Data Fetching Logic ---
+  // --- Data Fetching ---
 
   const fetchAoiData = useCallback(async () => {
     setLoading(true);
     setError(null);
 
     try {
-      // Note: We still fetch the list and filter, as we don't have the dedicated /aois/<id> route.
       const [detailsResponse, featuresResponse] = await Promise.all([
         apiClient.get("/api/aois"),
         apiClient.get(`/api/aois/${aoiId}/latest_features`),
@@ -80,7 +75,7 @@ export default function AoiDetail() {
     fetchAoiData();
   }, [fetchAoiData]);
 
-  // --- Delete Functionality ---
+  // --- Delete AOI ---
 
   const handleDelete = async () => {
     if (
@@ -96,7 +91,6 @@ export default function AoiDetail() {
     setSuccessMessage(null);
 
     try {
-      // Send DELETE request to the backend endpoint /api/aois/<aoiId>
       await apiClient.delete(`/api/aois/${aoiId}`);
 
       // On successful deletion, redirect to the dashboard
@@ -115,7 +109,7 @@ export default function AoiDetail() {
     }
   };
 
-  // --- Update Functionality (with fix for RangeError) ---
+  // --- Update AOI ---
 
   const handleUpdate = async (e) => {
     e.preventDefault();
@@ -129,17 +123,15 @@ export default function AoiDetail() {
     };
 
     try {
-      // Send PUT request
       const response = await apiClient.put(`/api/aois/${aoiId}`, updateData);
 
-      // CRITICAL FIX: Merge the returned data with the existing state to preserve 'created_at'
       setAoi((prevAoi) => ({
-        ...prevAoi, // Keep all existing fields (like created_at)
-        ...response.data, // Overwrite with updated fields (name, frequency)
+        ...prevAoi,
+        ...response.data,
       }));
 
       setSuccessMessage(`AOI "${editName}" updated successfully.`);
-      setIsEditing(false); // Close the edit form
+      setIsEditing(false);
     } catch (err) {
       console.error("AOI Update Error:", err);
       const errorMessage =
@@ -151,7 +143,7 @@ export default function AoiDetail() {
     }
   };
 
-  // --- NEW Download Functionality ---
+  // --- Download GeoJSON ---
   const handleDownloadGeoJSON = () => {
     if (!featuresGeojson) return;
 
@@ -180,12 +172,10 @@ export default function AoiDetail() {
     // 6. Clean up the object URL
     URL.revokeObjectURL(url);
   };
-  // ------------------------------------
 
   // --- Render Logic ---
 
   if (loading && !aoi) {
-    // ... (existing loading state)
     return (
       <div className="p-8 text-center">
         <h1 className="text-3xl font-bold text-gray-800">
@@ -219,7 +209,6 @@ export default function AoiDetail() {
   }
 
   if (error && !aoi) {
-    // ... (existing error state)
     return (
       <div className="p-8 max-w-4xl mx-auto">
         <div
@@ -239,7 +228,7 @@ export default function AoiDetail() {
     );
   }
 
-  if (!aoi) return null; // Should be handled by loading/error, but defensive check
+  if (!aoi) return null;
 
   const featureCount = featuresGeojson?.features?.length || 0;
 

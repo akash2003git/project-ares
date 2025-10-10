@@ -15,7 +15,6 @@ apiClient.interceptors.response.use(
     // Handle 401 Unauthorized globally
     if (error.response && error.response.status === 401) {
       console.error("401 Unauthorized: Session invalid or expired.");
-      //window.location.href = "/login";
     }
     return Promise.reject(error);
   },

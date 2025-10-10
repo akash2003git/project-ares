@@ -26,7 +26,6 @@ function FitBounds({ data }) {
     ) {
       try {
         const geoJsonLayer = L.geoJSON(data);
-        // Padding helps prevent features from sitting right on the edge
         map.fitBounds(geoJsonLayer.getBounds(), {
           padding: [40, 40],
           maxZoom: 15,
@@ -43,19 +42,22 @@ function FitBounds({ data }) {
 const defaultPosition = [21.01, 79.11]; // Nagpur fallback
 
 export default function MapViewer() {
-  const [week1Data, setWeek1Data] = useState(null);
-  const [week2Data, setWeek2Data] = useState(null);
+  // Renamed state variables
+  const [baseData, setBaseData] = useState(null);
+  const [comparisonData, setComparisonData] = useState(null);
   const [changes, setChanges] = useState(null);
   const [statusMessage, setStatusMessage] = useState(
     "Upload two GeoJSON files and click 'Detect Changes'.",
   );
-  const [fileName1, setFileName1] = useState("Week 1 File (GeoJSON)");
-  const [fileName2, setFileName2] = useState("Week 2 File (GeoJSON)");
+  // Renamed filename states
+  const [baseFileName, setBaseFileName] = useState("Base Data File (Time A)");
+  const [comparisonFileName, setComparisonFileName] = useState(
+    "Comparison Data File (Time B)",
+  );
 
   // --- File Handling ---
-  /**
-   * Reads a file and parses it as GeoJSON, updating the corresponding state.
-   */
+
+  // Reads a file and parses it as GeoJSON, updating the corresponding state.
   const handleFileUpload = (event, setData, setFileName) => {
     const file = event.target.files[0];
     if (!file) return;
@@ -97,12 +99,13 @@ export default function MapViewer() {
   };
 
   // --- Call backend for change detection ---
-  /**
-   * Sends the uploaded files to the backend API for processing.
-   */
+
+  // Sends the uploaded files to the backend API for processing.
   const detectChanges = useCallback(async () => {
-    if (!week1Data || !week2Data) {
-      setStatusMessage("Please upload both Week 1 and Week 2 GeoJSON files.");
+    if (!baseData || !comparisonData) {
+      setStatusMessage(
+        "Please upload both Base Data and Comparison Data GeoJSON files.",
+      );
       return;
     }
 
@@ -144,9 +147,10 @@ export default function MapViewer() {
       setStatusMessage("Change detection complete. Visualizing results.");
     } catch (err) {
       console.error("Error calling backend:", err);
+      setChanges(null); // Clear changes on error
       setStatusMessage(`Error: ${err.message}`);
     }
-  }, [week1Data, week2Data]);
+  }, [baseData, comparisonData]);
 
   // --- Styles ---
   // Styles for detected changes (visible after detection)
@@ -163,13 +167,14 @@ export default function MapViewer() {
     dashArray: "12, 6",
   };
 
-  // Styles for uploaded raw files (visible before detection, or as background)
-  const week1Style = {
+  // Styles for uploaded raw files
+  const baseStyle = {
     color: "#4F46E5", // Indigo Blue
     weight: 2,
     opacity: 0.6,
   };
-  const week2Style = {
+  const comparisonStyle = {
+    // Renamed style
     color: "#FBBF24", // Amber Yellow
     weight: 2,
     opacity: 0.6,
@@ -180,23 +185,23 @@ export default function MapViewer() {
   if (changes) {
     // If changes exist, use the combined features from the changes object
     dataForBounds = changes;
-  } else if (week1Data && week2Data) {
+  } else if (baseData && comparisonData) {
     // If files are loaded but no changes are detected yet, combine them to fit the area of interest
     dataForBounds = {
       type: "FeatureCollection",
-      features: [...week1Data.features, ...week2Data.features],
+      features: [...baseData.features, ...comparisonData.features],
     };
-  } else if (week1Data) {
-    dataForBounds = week1Data;
-  } else if (week2Data) {
-    dataForBounds = week2Data;
+  } else if (baseData) {
+    dataForBounds = baseData;
+  } else if (comparisonData) {
+    dataForBounds = comparisonData;
   }
 
   // Boolean flags for UI state
   const isDetecting =
     statusMessage.includes("Detecting") || statusMessage.includes("Uploading");
   // showRawData is true if files are loaded and change detection hasn't been run yet
-  const showRawData = !changes && (week1Data || week2Data);
+  const showRawData = !changes && (baseData || comparisonData);
   const hasChanges = changes?.features?.length > 0;
 
   return (
@@ -214,21 +219,23 @@ export default function MapViewer() {
             Upload & Process
           </h2>
 
-          {/* Upload Week 1 */}
+          {/* Upload Base Data */}
           <div className="space-y-2">
             <label
               htmlFor="file1"
               className="block text-sm font-medium text-gray-700"
             >
               <span className="font-bold text-indigo-600">
-                Week 1 Data (Baseline)
+                Base Data (Time A)
               </span>
             </label>
             <input
               id="file1"
               type="file"
               accept=".geojson, .json"
-              onChange={(e) => handleFileUpload(e, setWeek1Data, setFileName1)}
+              onChange={(e) =>
+                handleFileUpload(e, setBaseData, setBaseFileName)
+              }
               className="hidden"
             />
             <button
@@ -237,30 +244,32 @@ export default function MapViewer() {
             >
               <span
                 className={
-                  week1Data ? "text-green-600 font-medium" : "text-gray-500"
+                  baseData ? "text-green-600 font-medium" : "text-gray-500"
                 }
               >
-                {week1Data ? "Loaded: " : "Upload: "}
+                {baseData ? "Loaded: " : "Upload: "}{" "}
               </span>
-              {fileName1}
+              {baseFileName}
             </button>
           </div>
 
-          {/* Upload Week 2 */}
+          {/* Upload Comparison Data */}
           <div className="space-y-2">
             <label
               htmlFor="file2"
               className="block text-sm font-medium text-gray-700"
             >
               <span className="font-bold text-indigo-600">
-                Week 2 Data (Comparison)
+                Comparison Data (Time B)
               </span>
             </label>
             <input
               id="file2"
               type="file"
               accept=".geojson, .json"
-              onChange={(e) => handleFileUpload(e, setWeek2Data, setFileName2)}
+              onChange={(e) =>
+                handleFileUpload(e, setComparisonData, setComparisonFileName)
+              }
               className="hidden"
             />
             <button
@@ -269,19 +278,21 @@ export default function MapViewer() {
             >
               <span
                 className={
-                  week2Data ? "text-green-600 font-medium" : "text-gray-500"
+                  comparisonData
+                    ? "text-green-600 font-medium"
+                    : "text-gray-500"
                 }
               >
-                {week2Data ? "Loaded: " : "Upload: "}
+                {comparisonData ? "Loaded: " : "Upload: "}{" "}
               </span>
-              {fileName2}
+              {comparisonFileName}
             </button>
           </div>
 
           {/* Detect Button */}
           <button
             onClick={detectChanges}
-            disabled={!week1Data || !week2Data || isDetecting}
+            disabled={!baseData || !comparisonData || isDetecting}
             className="mt-6 w-full py-3 px-4 bg-indigo-600 text-white font-semibold rounded-lg shadow-md hover:bg-indigo-700 disabled:bg-indigo-300 disabled:cursor-not-allowed transition duration-150"
           >
             {isDetecting ? "Processing..." : "Detect Changes"}
@@ -303,11 +314,11 @@ export default function MapViewer() {
                 <span
                   className="w-6 h-1 mr-2 rounded"
                   style={{
-                    backgroundColor: week1Style.color,
-                    opacity: week1Style.opacity,
+                    backgroundColor: baseStyle.color,
+                    opacity: baseStyle.opacity,
                   }}
                 ></span>
-                <span className="text-gray-600">Week 1 (Baseline)</span>
+                <span className="text-gray-600">Base Data (Time A)</span>
               </li>
               <li
                 className={`flex items-center ${showRawData ? "font-semibold" : "opacity-50"}`}
@@ -315,11 +326,11 @@ export default function MapViewer() {
                 <span
                   className="w-6 h-1 mr-2 rounded"
                   style={{
-                    backgroundColor: week2Style.color,
-                    opacity: week2Style.opacity,
+                    backgroundColor: comparisonStyle.color,
+                    opacity: comparisonStyle.opacity,
                   }}
                 ></span>
-                <span className="text-gray-600">Week 2 (Comparison)</span>
+                <span className="text-gray-600">Comparison Data (Time B)</span>
               </li>
               <li
                 className={`flex items-center ${hasChanges ? "font-semibold" : "opacity-50"}`}
@@ -391,12 +402,17 @@ export default function MapViewer() {
               attribution='&copy; <a href="http://osm.org/copyright">OpenStreetMap</a> contributors'
             />
 
-            {/* ALWAYS render raw files */}
-            {week1Data && (
-              <GeoJSON key="week1" data={week1Data} style={week1Style} />
+            {/* Render Base Data */}
+            {baseData && (
+              <GeoJSON key="base" data={baseData} style={baseStyle} />
             )}
-            {week2Data && (
-              <GeoJSON key="week2" data={week2Data} style={week2Style} />
+            {/* Render Comparison Data */}
+            {comparisonData && (
+              <GeoJSON
+                key="comparison"
+                data={comparisonData}
+                style={comparisonStyle}
+              />
             )}
 
             {/* Overlay detected changes on top */}

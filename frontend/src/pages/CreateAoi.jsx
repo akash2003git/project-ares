@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import apiClient from "../api/apiClient"; // Your configured axios instance
+import apiClient from "../api/apiClient";
 
 // --- DEMO-SPECIFIC IMAGE OPTIONS ---
 // The available TIFF files located in the backend root directory
@@ -9,10 +9,8 @@ const DEMO_IMAGE_OPTIONS = [
   "test_image_2.tif",
   "test_image_3.tif",
   "test_image_4.tif",
-  // We'll also include an empty/default option
 ];
 
-// Define the available frequency options
 const FREQUENCY_OPTIONS = ["Manual", "Weekly", "Monthly", "Quarterly"];
 
 export default function CreateAoi() {
@@ -38,12 +36,11 @@ export default function CreateAoi() {
 
     const aoiData = {
       name: name,
-      image_name: imageName, // This will be the selected value from the dropdown
+      image_name: imageName,
       frequency: frequency,
     };
 
     try {
-      // Send POST request to the backend endpoint /api/aois
       const response = await apiClient.post("/api/aois", aoiData);
 
       console.log("AOI created successfully:", response.data);
@@ -56,7 +53,6 @@ export default function CreateAoi() {
       });
     } catch (err) {
       console.error("AOI Creation Error:", err);
-      // Extract a specific error message from the backend response if available
       const errorMessage =
         err.response?.data?.error ||
         "Failed to create AOI. Please check the image file is accessible by the backend.";

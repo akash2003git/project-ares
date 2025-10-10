@@ -9,6 +9,8 @@ import Dashboard from "./pages/Dashboard";
 import CreateAoi from "./pages/CreateAoi";
 import AoiDetail from "./pages/AoiDetail";
 import ProtectedRoute from "./components/ProtectedRoute";
+import About from "./pages/About";
+import Contact from "./pages/Contact";
 
 export default function App() {
   return (
@@ -27,6 +29,8 @@ export default function App() {
               path="/change-detection-demo"
               element={<ChangeDetectionDemo />}
             />
+            <Route path="/about" element={<About />} />
+            <Route path="/contact" element={<Contact />} />
 
             {/* Protected Routes */}
             <Route element={<ProtectedRoute />}>

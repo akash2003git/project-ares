@@ -1,8 +1,5 @@
 import psycopg2
 
-# Database connection parameters
-# It's best practice to use environment variables for this in a real app
-# but for this MVP, hardcoding is fine for a local setup.
 DB_HOST = "localhost"
 DB_NAME = "road_db"
 DB_USER = "akash"  # Replace with your user

@@ -1,7 +1,15 @@
 import { Link } from "react-router-dom";
 import { Bell, Database, Satellite } from "lucide-react";
+import { useAuth } from "../context/AuthContext";
 
 export default function Home() {
+  const { user } = useAuth();
+
+  // user will be null if not logged in, or an object if logged in.
+  const isLoggedIn = !!user;
+  const ctaPath = isLoggedIn ? "/dashboard" : "/signup";
+  const ctaText = isLoggedIn ? "Go to Dashboard" : "Get Started";
+
   return (
     <div className="bg-gray-50 min-h-screen flex flex-col">
       {/* Call to Action */}
@@ -21,10 +29,10 @@ export default function Home() {
             infrastructure intelligence.
           </p>
           <Link
-            to="/signup"
+            to={ctaPath}
             className="bg-indigo-600 text-white px-8 py-3 rounded-lg font-semibold shadow-lg hover:bg-indigo-500 transition"
           >
-            Get Started
+            {ctaText}
           </Link>
         </div>
       </section>
@@ -146,7 +154,7 @@ export default function Home() {
               Terms
             </Link>
             <Link
-              to="#"
+              to="/contact"
               className="hover:text-gray-300 transition font-semibold"
             >
               Contact
