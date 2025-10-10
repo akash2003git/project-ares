@@ -19,9 +19,9 @@ It is a full-stack application built with a **React (Vite) frontend**, a **Pytho
 
 **Placement:** Create a new folder named `screenshots/` in your project's root directory (outside of `backend`). Place your four images there.
 
-|      Home Page View      |       Change Detection Result        |           Dahsboard           |       AOI Details       |
-| :----------------------: | :----------------------------------: | :---------------------------: | :---------------------: |
-| `./screenshots/home.png` | `./screenshots/change_detection.png` | `./screenshots/dashboard.png` | `./screenshots/aoi.png` |
+|            Home Page View            |                 Change Detection Result                 |                 Dashboard                 |              AOI Details              |
+| :----------------------------------: | :-----------------------------------------------------: | :---------------------------------------: | :-----------------------------------: |
+| ![Home Page](./screenshots/home.png) | ![Change Detection](./screenshots/change_detection.png) | ![Dashboard](./screenshots/dashboard.png) | ![AOI Details](./screenshots/aoi.png) |
 
 ---
 
