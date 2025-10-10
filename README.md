@@ -8,7 +8,7 @@ It is a full-stack application built with a **React (Vite) frontend**, a **Pytho
 
 ### Key Features
 
-- **Automated Road Segmentation:** Utilizes a custom U-Net based model (stored in `backend/model/`) to extract road features (MultiLineString GeoJSON) from high-resolution TIFF satellite images.
+- **Automated Road Segmentation:** Utilizes a custom DeepLabV3+ model (stored in `backend/model/`) to extract road features (MultiLineString GeoJSON) from high-resolution TIFF satellite images.
 - **Geospatial Change Detection:** Implements PostGIS topological operations to efficiently calculate **Additions (New Roads)** and **Deletions (Removed Roads)** between two temporal snapshots.
 - **Area of Interest (AOI) Management:** Allows users to define, track, and schedule automated road change monitoring for specific geographic regions.
 - **Full-Stack MVP:** Includes user authentication, database persistence, and a map-based UI for visualization.
@@ -124,7 +124,6 @@ This project requires **PostgreSQL** with the **PostGIS** extension enabled for 
 1.  **Install Dependencies:**
 
     ```bash
-    # Assuming your frontend code is in a 'frontend' folder one level up
     cd ..
     cd frontend
     npm install
